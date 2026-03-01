@@ -4570,9 +4570,7 @@ impl<S: ServerHandler + Send + Sync> ServerHandler for SanitizedIdaServer<S> {
 
         // Guard against unknown tool names. rmcp's ToolRouter may hang
         // indefinitely when dispatching a tool name that was never registered
-        // via #[tool] (e.g. "decompile_function" is a worker-level RPC alias
-        // in rpc_dispatch.rs, but not a registered MCP tool). Return a clear
-        // MCP error instead of blocking the server.
+        // via #[tool]. Return a clear MCP error instead of blocking the server.
         if self.0.get_tool(&params.name).is_none() {
             warn!(tool = %params.name, "Unknown tool called — not registered in MCP tool router");
             return Ok(ToolError::InvalidToolName(

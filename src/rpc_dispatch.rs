@@ -246,7 +246,7 @@ pub async fn dispatch_rpc<W: WorkerDispatch>(
                 Ok(json!({"results": results}))
             }
         }
-        "pseudocode_at" | "decompile_function" => {
+        "pseudocode_at" => {
             let req: PseudocodeAtRequest = parse_params(p)?;
             let addr = parse_address_value(&req.address).unwrap_or(0);
             let end_addr = req
