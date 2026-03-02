@@ -300,6 +300,30 @@ pub struct DiffFunctionsRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ListStringsRequest {
+    #[schemars(
+        description = "Optional database handle for multi-IDB routing. If omitted, uses the active database."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Substring search query")]
+    pub query: Option<String>,
+    #[schemars(description = "Alias for query")]
+    pub filter: Option<String>,
+    #[schemars(description = "Exact match mode (default: false)")]
+    pub exact: Option<bool>,
+    #[schemars(description = "Case insensitive search (default: true)")]
+    pub case_insensitive: Option<bool>,
+    #[schemars(description = "Offset for pagination (default: 0)")]
+    pub offset: Option<usize>,
+    #[schemars(description = "Maximum strings to return (1-10000, default: 100)")]
+    #[serde(alias = "count")]
+    pub limit: Option<usize>,
+    #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct StringsRequest {
     #[schemars(
         description = "Optional database handle for multi-IDB routing. If omitted, uses the active database."
@@ -683,7 +707,9 @@ pub struct SetDecompilerCommentRequest {
     #[schemars(description = "Function address (string/number)")]
     #[serde(alias = "func_ea", alias = "func_addr")]
     pub func_address: Value,
-    #[schemars(description = "Address within the function to attach the comment to (string/number)")]
+    #[schemars(
+        description = "Address within the function to attach the comment to (string/number)"
+    )]
     #[serde(alias = "ea")]
     pub address: Value,
     #[schemars(

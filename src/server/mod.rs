@@ -569,11 +569,11 @@ impl IdaMcpServer {
                 "quick_tools".to_string(),
                 json!([
                     "list_functions",
-                    "resolve_function",
-                    "disasm_by_name",
-                    "decompile",
-                    "xrefs_to",
-                    "strings",
+                    "get_function_by_name",
+                    "disassemble_function",
+                    "decompile_function",
+                    "get_xrefs_to",
+                    "list_strings",
                     "close_idb"
                 ]),
             );
@@ -704,11 +704,11 @@ impl IdaMcpServer {
                         "quick_tools".to_string(),
                         json!([
                             "list_functions",
-                            "resolve_function",
-                            "disasm_by_name",
-                            "decompile",
-                            "xrefs_to",
-                            "strings",
+                            "get_function_by_name",
+                            "disassemble_function",
+                            "decompile_function",
+                            "get_xrefs_to",
+                            "list_strings",
                             "close_idb"
                         ]),
                     );
@@ -725,8 +725,7 @@ impl IdaMcpServer {
         }
     }
 
-    #[tool(
-        description = "Open a Solana sBPF program (.so) for analysis. \
+    #[tool(description = "Open a Solana sBPF program (.so) for analysis. \
         Automatically AOT-compiles the sBPF binary to a host-native shared library via sbpf2host \
         (if needed), then opens the result in IDA Pro with full Hex-Rays decompilation support. \
         Fast-path tiers (checked in order): \
@@ -739,8 +738,7 @@ impl IdaMcpServer {
         Debug symbols (.dSYM) are loaded automatically when present. \
         Returns db_handle, close_token, sbpf_source, dylib_path, and compiled=true/false. \
         Requires sbpf2host (cargo install sbpf2host) or SBPF2HOST env var. \
-        Example: open_sbpf(path: '~/programs/675kPX9.so')"
-    )]
+        Example: open_sbpf(path: '~/programs/675kPX9.so')")]
     #[instrument(skip(self), fields(path = %req.path))]
     async fn open_sbpf(
         &self,
@@ -756,7 +754,7 @@ impl IdaMcpServer {
         if let Some(ref explicit) = req.sbpf2host_path {
             // SAFETY: set env only in this process; we're single-threaded at this point.
             // Using a temp env override so find_sbpf2host() picks it up.
-            std::env::set_var("SBPF2HOST", explicit);
+            unsafe { std::env::set_var("SBPF2HOST", explicit) };
         }
 
         let input = crate::expand_path(&req.path);
@@ -816,16 +814,12 @@ impl IdaMcpServer {
         };
 
         // Extract db_handle from open result (needed for subsequent queries).
-        let db_handle: Option<String> = result
-            .content
-            .first()
-            .and_then(|c| match &c.raw {
-                rmcp::model::RawContent::Text(t) => {
-                                    serde_json::from_str::<serde_json::Value>(&t.text).ok()
-                        .and_then(|v| v.get("db_handle")?.as_str().map(String::from))
-                }
-                _ => None,
-            });
+        let db_handle: Option<String> = result.content.first().and_then(|c| match &c.raw {
+            rmcp::model::RawContent::Text(t) => serde_json::from_str::<serde_json::Value>(&t.text)
+                .ok()
+                .and_then(|v| v.get("db_handle")?.as_str().map(String::from)),
+            _ => None,
+        });
 
         // Try to resolve the Solana program entrypoint for convenience.
         // The entrypoint!() macro produces a function named "entrypoint"
@@ -837,20 +831,19 @@ impl IdaMcpServer {
                     .route_or_err(
                         router,
                         Some(handle),
-                        "resolve_function",
+                        "get_function_by_name",
                         json!({"name": "entrypoint"}),
                     )
                     .await
                 {
-                    Ok(r) if !r.is_error.unwrap_or(false) => r
-                        .content
-                        .first()
-                        .and_then(|c| match &c.raw {
+                    Ok(r) if !r.is_error.unwrap_or(false) => {
+                        r.content.first().and_then(|c| match &c.raw {
                             rmcp::model::RawContent::Text(t) => {
                                 serde_json::from_str::<serde_json::Value>(&t.text).ok()
                             }
                             _ => None,
-                        }),
+                        })
+                    }
                     _ => None,
                 }
             } else {
@@ -858,11 +851,13 @@ impl IdaMcpServer {
                     .resolve_function("entrypoint")
                     .await
                     .ok()
-                    .map(|info| json!({
-                        "name": info.name,
-                        "address": info.address,
-                        "size": info.size,
-                    }))
+                    .map(|info| {
+                        json!({
+                            "name": info.name,
+                            "address": info.address,
+                            "size": info.size,
+                        })
+                    })
             }
         } else {
             None
@@ -882,9 +877,7 @@ impl IdaMcpServer {
                 .as_ref()
                 .and_then(|ep| ep.get("address"))
                 .and_then(|v| v.as_str())
-                .and_then(|s| {
-                    u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()
-                });
+                .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
             let (Some(ep_addr), Some(ref handle)) = (ep_addr, &db_handle) else {
                 break 'pi None;
             };
@@ -896,7 +889,7 @@ impl IdaMcpServer {
                         .route_or_err(
                             router,
                             Some(handle),
-                            "callgraph",
+                            "build_callgraph",
                             json!({
                                 "roots": format!("0x{:x}", ep_addr),
                                 "max_depth": 2,
@@ -905,15 +898,14 @@ impl IdaMcpServer {
                         )
                         .await
                     {
-                        Ok(r) if !r.is_error.unwrap_or(false) => r
-                            .content
-                            .first()
-                            .and_then(|c| match &c.raw {
+                        Ok(r) if !r.is_error.unwrap_or(false) => {
+                            r.content.first().and_then(|c| match &c.raw {
                                 rmcp::model::RawContent::Text(t) => {
                                     serde_json::from_str::<serde_json::Value>(&t.text).ok()
                                 }
                                 _ => None,
-                            }),
+                            })
+                        }
                         _ => None,
                     }
                 } else {
@@ -964,8 +956,7 @@ impl IdaMcpServer {
             } else {
                 direct_callees[1]
             };
-            let Some(pi_addr) =
-                u64::from_str_radix(pi_hex.trim_start_matches("0x"), 16).ok()
+            let Some(pi_addr) = u64::from_str_radix(pi_hex.trim_start_matches("0x"), 16).ok()
             else {
                 break 'pi None;
             };
@@ -976,20 +967,19 @@ impl IdaMcpServer {
                     .route_or_err(
                         router,
                         Some(handle),
-                        "function_at",
+                        "get_function_at_address",
                         json!({"address": pi_hex}),
                     )
                     .await
                 {
-                    Ok(r) if !r.is_error.unwrap_or(false) => r
-                        .content
-                        .first()
-                        .and_then(|c| match &c.raw {
+                    Ok(r) if !r.is_error.unwrap_or(false) => {
+                        r.content.first().and_then(|c| match &c.raw {
                             rmcp::model::RawContent::Text(t) => {
                                 serde_json::from_str::<serde_json::Value>(&t.text).ok()
                             }
                             _ => None,
-                        }),
+                        })
+                    }
                     _ => None,
                 }
             } else {
@@ -997,25 +987,28 @@ impl IdaMcpServer {
                     .function_at(Some(pi_addr), None, 0)
                     .await
                     .ok()
-                    .map(|info| json!({
-                        "name": info.name,
-                        "address": info.address,
-                        "size": info.size,
-                    }))
+                    .map(|info| {
+                        json!({
+                            "name": info.name,
+                            "address": info.address,
+                            "size": info.size,
+                        })
+                    })
             }
         };
 
         // Rename the detected process_instruction in IDA for convenience.
         // Update the JSON name field to reflect the rename.
         if let Some(ref mut pi) = process_instruction_json {
-            if let Some(pi_addr_str) = pi.get("address").and_then(|v| v.as_str()).map(String::from) {
+            if let Some(pi_addr_str) = pi.get("address").and_then(|v| v.as_str()).map(String::from)
+            {
                 let current_name = pi.get("name").and_then(|v| v.as_str()).map(String::from);
                 let renamed = if let Some(ref handle) = db_handle {
                     if let ServerMode::Router(ref router) = self.mode {
                         self.route_or_err(
                             router,
                             Some(handle),
-                            "rename",
+                            "rename_symbol",
                             json!({
                                 "address": pi_addr_str,
                                 "new_name": "process_instruction",
@@ -1106,11 +1099,11 @@ impl IdaMcpServer {
     #[tool(description = "Report auto-analysis status (auto_is_ok, auto_state). \
         Use this to check whether analysis-dependent tools (xrefs, decompile) are fully ready.")]
     #[instrument(skip(self))]
-    async fn analysis_status(&self) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: analysis_status");
+    async fn get_analysis_status(&self) -> Result<CallToolResult, McpError> {
+        debug!("Tool call: get_analysis_status");
         if let ServerMode::Router(ref router) = self.mode {
             return self
-                .route_or_err(router, None, "analysis_status", json!({}))
+                .route_or_err(router, None, "get_analysis_status", json!({}))
                 .await;
         }
         match self.worker.analysis_status().await {
@@ -1372,17 +1365,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Resolve a function name to its address")]
     #[instrument(skip(self), fields(name = %req.name))]
-    async fn resolve_function(
+    async fn get_function_by_name(
         &self,
         Parameters(req): Parameters<ResolveFunctionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: resolve_function");
+        debug!("Tool call: get_function_by_name");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "resolve_function",
+                    "get_function_by_name",
                     json!({"name": req.name}),
                 )
                 .await;
@@ -1396,7 +1389,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Get address context (segment, function, nearest symbol)")]
-    async fn addr_info(
+    async fn get_address_info(
         &self,
         Parameters(req): Parameters<AddrInfoRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1405,7 +1398,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "addr_info",
+                    "get_address_info",
                     json!({"addr": req.address, "name": req.target_name, "offset": req.offset}),
                 )
                 .await;
@@ -1431,7 +1424,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Get the function that contains an address")]
-    async fn function_at(
+    async fn get_function_at_address(
         &self,
         Parameters(req): Parameters<FunctionAtRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1440,7 +1433,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "function_at",
+                    "get_function_at_address",
                     json!({"addr": req.address, "name": req.target_name, "offset": req.offset}),
                 )
                 .await;
@@ -1467,17 +1460,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get disassembly at an address")]
     #[instrument(skip(self), fields(address = %req.address, count = req.count))]
-    async fn disasm(
+    async fn disassemble(
         &self,
         Parameters(req): Parameters<DisasmRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: disasm");
+        debug!("Tool call: disassemble");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "disasm",
+                    "disassemble",
                     json!({"address": req.address, "count": req.count}),
                 )
                 .await;
@@ -1517,17 +1510,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get disassembly for a function by name")]
     #[instrument(skip(self), fields(name = %req.name, count = req.count))]
-    async fn disasm_by_name(
+    async fn disassemble_function(
         &self,
         Parameters(req): Parameters<DisasmByNameRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: disasm_by_name");
+        debug!("Tool call: disassemble_function");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "disasm_by_name",
+                    "disassemble_function",
                     json!({"name": req.name, "count": req.count}),
                 )
                 .await;
@@ -1541,7 +1534,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Disassemble the function containing an address")]
-    async fn disasm_function_at(
+    async fn disassemble_function_at(
         &self,
         Parameters(req): Parameters<DisasmFunctionAtRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1550,7 +1543,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "disasm_function_at",
+                    "disassemble_function_at",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -1576,17 +1569,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Decompile a function using Hex-Rays (if available)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn decompile(
+    async fn decompile_function(
         &self,
         Parameters(req): Parameters<DecompileRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: decompile");
+        debug!("Tool call: decompile_function");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "decompile",
+                    "decompile_function",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -1629,17 +1622,17 @@ impl IdaMcpServer {
         or specific instruction. If end_address is provided, returns statements covering the range."
     )]
     #[instrument(skip(self), fields(address = %req.address, end_address = ?req.end_address))]
-    async fn pseudocode_at(
+    async fn get_pseudocode_at(
         &self,
         Parameters(req): Parameters<PseudocodeAtRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: pseudocode_at");
+        debug!("Tool call: get_pseudocode_at");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "pseudocode_at",
+                    "get_pseudocode_at",
                     json!({"address": req.address, "end_addr": req.end_address}),
                 )
                 .await;
@@ -1876,11 +1869,11 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Scan a table in memory by reading entries at stride intervals")]
-    async fn table_scan(
+    async fn scan_memory_table(
         &self,
         Parameters(req): Parameters<TableScanRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: table_scan");
+        debug!("Tool call: scan_memory_table");
 
         let stride = req.stride.unwrap_or(8).max(1);
         let count = req.count.unwrap_or(16).min(256);
@@ -1890,7 +1883,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "table_scan",
+                    "scan_memory_table",
                     json!({
                         "base_address": req.base_address,
                         "stride": stride,
@@ -1945,18 +1938,18 @@ impl IdaMcpServer {
     #[tool(
         description = "Decompile two functions and return a line-by-line diff of their pseudocode"
     )]
-    async fn diff_functions(
+    async fn diff_pseudocode(
         &self,
         Parameters(req): Parameters<DiffFunctionsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: diff_functions");
+        debug!("Tool call: diff_pseudocode");
 
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "diff_functions",
+                    "diff_pseudocode",
                     json!({
                         "addr1": req.addr1,
                         "addr2": req.addr2,
@@ -2031,10 +2024,12 @@ impl IdaMcpServer {
 
     #[tool(description = "List all segments in the database with their permissions and types")]
     #[instrument(skip(self))]
-    async fn segments(&self) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: segments");
+    async fn list_segments(&self) -> Result<CallToolResult, McpError> {
+        debug!("Tool call: list_segments");
         if let ServerMode::Router(ref router) = self.mode {
-            return self.route_or_err(router, None, "segments", json!({})).await;
+            return self
+                .route_or_err(router, None, "list_segments", json!({}))
+                .await;
         }
         match self.worker.segments().await {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2045,84 +2040,69 @@ impl IdaMcpServer {
     }
 
     #[tool(
-        description = "List strings in the database with pagination and optional filter. \
+        description = "List or find strings in the database (supports query/exact/case-insensitive options). \
         For large databases, consider setting timeout_secs (default: 120, max: 600)."
     )]
-    #[instrument(skip(self), fields(offset = req.offset, limit = req.limit, filter = ?req.filter))]
-    async fn strings(
+    #[instrument(skip(self), fields(offset = req.offset, limit = req.limit, query = ?req.query, filter = ?req.filter))]
+    async fn list_strings(
         &self,
-        Parameters(req): Parameters<StringsRequest>,
+        Parameters(req): Parameters<ListStringsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: strings");
+        debug!("Tool call: list_strings");
+        let query = req.query.or(req.filter);
+
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "strings",
-                    serde_json::to_value(&req).unwrap_or_default(),
+                    "list_strings",
+                    json!({
+                        "query": query,
+                        "exact": req.exact,
+                        "case_insensitive": req.case_insensitive,
+                        "offset": req.offset,
+                        "limit": req.limit,
+                        "timeout_secs": req.timeout_secs,
+                    }),
                 )
                 .await;
         }
+
         let limit = req.limit.unwrap_or(100).min(10000);
         let offset = req.offset.unwrap_or(0);
-
-        match self
-            .worker
-            .strings(offset, limit, req.filter, req.timeout_secs)
-            .await
-        {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)),
-            )])),
-            Err(e) => Ok(e.to_tool_result()),
-        }
-    }
-
-    #[tool(
-        description = "Find strings matching a query (supports exact/case-insensitive options). \
-        For large databases, consider setting timeout_secs (default: 120, max: 600)."
-    )]
-    async fn find_string(
-        &self,
-        Parameters(req): Parameters<FindStringRequest>,
-    ) -> Result<CallToolResult, McpError> {
-        if let ServerMode::Router(ref router) = self.mode {
-            return self
-                .route_or_err(
-                    router,
-                    req.db_handle.as_deref(),
-                    "find_string",
-                    serde_json::to_value(&req).unwrap_or_default(),
-                )
-                .await;
-        }
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
-        let exact = req.exact.unwrap_or(false);
-        let case_insensitive = req.case_insensitive.unwrap_or(true);
-        match self
-            .worker
-            .find_string(
-                req.query.clone(),
-                exact,
-                case_insensitive,
-                offset,
-                limit,
-                req.timeout_secs,
-            )
-            .await
-        {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)),
-            )])),
-            Err(e) => Ok(e.to_tool_result()),
+        if let Some(q) = query {
+            let exact = req.exact.unwrap_or(false);
+            let case_insensitive = req.case_insensitive.unwrap_or(true);
+            match self
+                .worker
+                .find_string(q, exact, case_insensitive, offset, limit, req.timeout_secs)
+                .await
+            {
+                Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| format!("{:?}", result)),
+                )])),
+                Err(e) => Ok(e.to_tool_result()),
+            }
+        } else {
+            match self
+                .worker
+                .strings(offset, limit, None, req.timeout_secs)
+                .await
+            {
+                Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| format!("{:?}", result)),
+                )])),
+                Err(e) => Ok(e.to_tool_result()),
+            }
         }
     }
 
     #[tool(description = "Find strings and return xrefs to each match. \
         For large databases, consider setting timeout_secs (default: 120, max: 600).")]
-    async fn xrefs_to_string(
+    async fn get_xrefs_to_string(
         &self,
         Parameters(req): Parameters<XrefsToStringRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -2131,7 +2111,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "xrefs_to_string",
+                    "get_xrefs_to_string",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -2163,17 +2143,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get cross-references TO an address (who references this address)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn xrefs_to(
+    async fn get_xrefs_to(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: xrefs_to");
+        debug!("Tool call: get_xrefs_to");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "xrefs_to",
+                    "get_xrefs_to",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -2214,17 +2194,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get cross-references FROM an address (what this address references)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn xrefs_from(
+    async fn get_xrefs_from(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: xrefs_from");
+        debug!("Tool call: get_xrefs_from");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "xrefs_from",
+                    "get_xrefs_from",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -2265,17 +2245,17 @@ impl IdaMcpServer {
 
     #[tool(description = "List imports (external symbols) with pagination")]
     #[instrument(skip(self), fields(offset = req.offset, limit = req.limit))]
-    async fn imports(
+    async fn list_imports(
         &self,
         Parameters(req): Parameters<PaginatedRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: imports");
+        debug!("Tool call: list_imports");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "imports",
+                    "list_imports",
                     json!({"offset": req.offset, "limit": req.limit}),
                 )
                 .await;
@@ -2293,17 +2273,17 @@ impl IdaMcpServer {
 
     #[tool(description = "List exports/names (public symbols) with pagination")]
     #[instrument(skip(self), fields(offset = req.offset, limit = req.limit))]
-    async fn exports(
+    async fn list_exports(
         &self,
         Parameters(req): Parameters<PaginatedRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: exports");
+        debug!("Tool call: list_exports");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "exports",
+                    "list_exports",
                     json!({"offset": req.offset, "limit": req.limit}),
                 )
                 .await;
@@ -2321,11 +2301,11 @@ impl IdaMcpServer {
 
     #[tool(description = "Get entry point addresses of the binary")]
     #[instrument(skip(self))]
-    async fn entrypoints(&self) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: entrypoints");
+    async fn list_entry_points(&self) -> Result<CallToolResult, McpError> {
+        debug!("Tool call: list_entry_points");
         if let ServerMode::Router(ref router) = self.mode {
             return self
-                .route_or_err(router, None, "entrypoints", json!({}))
+                .route_or_err(router, None, "list_entry_points", json!({}))
                 .await;
         }
         match self.worker.entrypoints().await {
@@ -2338,17 +2318,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Read raw bytes from an address as hex string")]
     #[instrument(skip(self), fields(size = req.size))]
-    async fn get_bytes(
+    async fn read_bytes(
         &self,
         Parameters(req): Parameters<GetBytesRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: get_bytes");
+        debug!("Tool call: read_bytes");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "get_bytes",
+                    "read_bytes",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -2407,17 +2387,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get basic blocks of a function (control flow graph nodes)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn basic_blocks(
+    async fn get_basic_blocks(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: basic_blocks");
+        debug!("Tool call: get_basic_blocks");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "basic_blocks",
+                    "get_basic_blocks",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -2458,17 +2438,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get functions called BY a function (callees/children in call graph)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn callees(
+    async fn get_callees(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: callees");
+        debug!("Tool call: get_callees");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "callees",
+                    "get_callees",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -2509,17 +2489,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get functions that CALL a function (callers/parents in call graph)")]
     #[instrument(skip(self), fields(address = %req.address))]
-    async fn callers(
+    async fn get_callers(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: callers");
+        debug!("Tool call: get_callers");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "callers",
+                    "get_callers",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -2560,10 +2540,12 @@ impl IdaMcpServer {
 
     #[tool(description = "Get IDB metadata (ida-pro-mcp compatibility)")]
     #[instrument(skip(self))]
-    async fn idb_meta(&self) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: idb_meta");
+    async fn get_database_info(&self) -> Result<CallToolResult, McpError> {
+        debug!("Tool call: get_database_info");
         if let ServerMode::Router(ref router) = self.mode {
-            return self.route_or_err(router, None, "idb_meta", json!({})).await;
+            return self
+                .route_or_err(router, None, "get_database_info", json!({}))
+                .await;
         }
         match self.worker.idb_meta().await {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2575,17 +2557,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Lookup functions by name or address (batch)")]
     #[instrument(skip(self))]
-    async fn lookup_funcs(
+    async fn batch_lookup_functions(
         &self,
         Parameters(req): Parameters<LookupFuncsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: lookup_funcs");
+        debug!("Tool call: batch_lookup_functions");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "lookup_funcs",
+                    "batch_lookup_functions",
                     json!({"queries": req.queries}),
                 )
                 .await;
@@ -2634,54 +2616,20 @@ impl IdaMcpServer {
         }
     }
 
-    #[tool(
-        description = "Analyze strings with xrefs (ida-pro-mcp compatibility). \
-        For large databases, consider setting timeout_secs (default: 120, max: 600)."
-    )]
-    #[instrument(skip(self), fields(offset = req.offset, limit = req.limit, query = ?req.query))]
-    async fn analyze_strings(
-        &self,
-        Parameters(req): Parameters<AnalyzeStringsRequest>,
-    ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: analyze_strings");
-        if let ServerMode::Router(ref router) = self.mode {
-            return self
-                .route_or_err(
-                    router,
-                    req.db_handle.as_deref(),
-                    "analyze_strings",
-                    serde_json::to_value(&req).unwrap_or_default(),
-                )
-                .await;
-        }
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
-        match self
-            .worker
-            .analyze_strings(req.query.clone(), offset, limit, req.timeout_secs)
-            .await
-        {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)),
-            )])),
-            Err(e) => Ok(e.to_tool_result()),
-        }
-    }
-
     #[tool(description = "Find byte patterns (ida-pro-mcp compatibility). \
         For large databases, consider setting timeout_secs (default: 120, max: 600).")]
     #[instrument(skip(self))]
-    async fn find_bytes(
+    async fn search_bytes(
         &self,
         Parameters(req): Parameters<FindBytesRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: find_bytes");
+        debug!("Tool call: search_bytes");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "find_bytes",
+                    "search_bytes",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -2744,11 +2692,11 @@ impl IdaMcpServer {
         For large databases, consider setting timeout_secs (default: 120, max: 600)."
     )]
     #[instrument(skip(self))]
-    async fn search(
+    async fn search_text(
         &self,
         Parameters(req): Parameters<SearchRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: search");
+        debug!("Tool call: search_text");
         if let ServerMode::Router(ref router) = self.mode {
             let db_handle = req.db_handle.as_deref();
             let kind = req.kind.as_deref().unwrap_or("auto").to_lowercase();
@@ -2863,7 +2811,7 @@ impl IdaMcpServer {
 
     #[tool(description = "Read u8 values at address(es)")]
     #[instrument(skip(self))]
-    async fn get_u8(
+    async fn read_byte(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -2882,7 +2830,7 @@ impl IdaMcpServer {
 
     #[tool(description = "Read u16 values at address(es)")]
     #[instrument(skip(self))]
-    async fn get_u16(
+    async fn read_word(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -2901,7 +2849,7 @@ impl IdaMcpServer {
 
     #[tool(description = "Read u32 values at address(es)")]
     #[instrument(skip(self))]
-    async fn get_u32(
+    async fn read_dword(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -2920,7 +2868,7 @@ impl IdaMcpServer {
 
     #[tool(description = "Read u64 values at address(es)")]
     #[instrument(skip(self))]
-    async fn get_u64(
+    async fn read_qword(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -2939,17 +2887,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Read string(s) at address(es)")]
     #[instrument(skip(self))]
-    async fn get_string(
+    async fn read_string(
         &self,
         Parameters(req): Parameters<GetStringRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: get_string");
+        debug!("Tool call: read_string");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "get_string",
+                    "read_string",
                     json!({"address": req.address, "max_len": req.max_len}),
                 )
                 .await;
@@ -2991,17 +2939,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get global value(s) by name or address")]
     #[instrument(skip(self))]
-    async fn get_global_value(
+    async fn read_global_variable(
         &self,
         Parameters(req): Parameters<GetGlobalValueRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: get_global_value");
+        debug!("Tool call: read_global_variable");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "get_global_value",
+                    "read_global_variable",
                     json!({"query": req.query}),
                 )
                 .await;
@@ -3042,17 +2990,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Find paths between two addresses (CFG)")]
     #[instrument(skip(self))]
-    async fn find_paths(
+    async fn find_control_flow_paths(
         &self,
         Parameters(req): Parameters<FindPathsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: find_paths");
+        debug!("Tool call: find_control_flow_paths");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "find_paths",
+                    "find_control_flow_paths",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3082,17 +3030,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Build a callgraph rooted at an address")]
     #[instrument(skip(self))]
-    async fn callgraph(
+    async fn build_callgraph(
         &self,
         Parameters(req): Parameters<CallGraphRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: callgraph");
+        debug!("Tool call: build_callgraph");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "callgraph",
+                    "build_callgraph",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3135,17 +3083,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Compute xref matrix for a set of addresses")]
     #[instrument(skip(self))]
-    async fn xref_matrix(
+    async fn build_xref_matrix(
         &self,
         Parameters(req): Parameters<XrefMatrixRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: xref_matrix");
+        debug!("Tool call: build_xref_matrix");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "xref_matrix",
+                    "build_xref_matrix",
                     json!({"addrs": req.addrs}),
                 )
                 .await;
@@ -3164,17 +3112,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Export functions (ida-pro-mcp compatibility)")]
     #[instrument(skip(self), fields(offset = req.offset, limit = req.limit))]
-    async fn export_funcs(
+    async fn export_functions(
         &self,
         Parameters(req): Parameters<ExportFuncsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: export_funcs");
+        debug!("Tool call: export_functions");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "export_funcs",
+                    "export_functions",
                     json!({"offset": req.offset, "limit": req.limit}),
                 )
                 .await;
@@ -3215,11 +3163,11 @@ impl IdaMcpServer {
 
     #[tool(description = "Convert integers between bases")]
     #[instrument(skip(self))]
-    async fn int_convert(
+    async fn convert_number(
         &self,
         Parameters(req): Parameters<IntConvertRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: int_convert");
+        debug!("Tool call: convert_number");
         let inputs = match Self::value_to_strings(&req.inputs) {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
@@ -3258,7 +3206,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "List local types")]
-    async fn local_types(
+    async fn list_local_types(
         &self,
         Parameters(req): Parameters<LocalTypesRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3267,7 +3215,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "local_types",
+                    "list_local_types",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3287,7 +3235,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Get xrefs to a struct field")]
-    async fn xrefs_to_field(
+    async fn get_xrefs_to_struct_field(
         &self,
         Parameters(req): Parameters<XrefsToFieldRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3296,7 +3244,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "xrefs_to_field",
+                    "get_xrefs_to_struct_field",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3321,7 +3269,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Set comments at an address")]
-    async fn set_comments(
+    async fn set_comment(
         &self,
         Parameters(req): Parameters<SetCommentsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3330,7 +3278,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "set_comments",
+                    "set_comment",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3363,7 +3311,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Patch instructions with assembly text")]
-    async fn patch_asm(
+    async fn patch_assembly(
         &self,
         Parameters(req): Parameters<PatchAsmRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3372,7 +3320,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "patch_asm",
+                    "patch_assembly",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3398,7 +3346,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Declare a type in the local type library")]
-    async fn declare_type(
+    async fn declare_c_type(
         &self,
         Parameters(req): Parameters<DeclareTypeRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3407,7 +3355,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "declare_type",
+                    "declare_c_type",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3428,7 +3376,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Get stack frame info")]
-    async fn stack_frame(
+    async fn get_stack_frame(
         &self,
         Parameters(req): Parameters<AddressRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3437,7 +3385,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "stack_frame",
+                    "get_stack_frame",
                     json!({"address": req.address}),
                 )
                 .await;
@@ -3455,7 +3403,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Declare a stack variable in a function frame")]
-    async fn declare_stack(
+    async fn create_stack_variable(
         &self,
         Parameters(req): Parameters<DeclareStackRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3464,7 +3412,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "declare_stack",
+                    "create_stack_variable",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3497,7 +3445,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Delete a stack variable from a function frame")]
-    async fn delete_stack(
+    async fn delete_stack_variable(
         &self,
         Parameters(req): Parameters<DeleteStackRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3506,7 +3454,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "delete_stack",
+                    "delete_stack_variable",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3540,17 +3488,17 @@ impl IdaMcpServer {
         For large databases, consider setting timeout_secs (default: 120, max: 600)."
     )]
     #[instrument(skip(self), fields(offset = req.offset, limit = req.limit, filter = ?req.filter))]
-    async fn structs(
+    async fn list_structs(
         &self,
         Parameters(req): Parameters<StructsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: structs");
+        debug!("Tool call: list_structs");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "structs",
+                    "list_structs",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3572,17 +3520,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Get info about a struct by ordinal or name")]
     #[instrument(skip(self), fields(ordinal = req.ordinal, name = ?req.name))]
-    async fn struct_info(
+    async fn get_struct_info(
         &self,
         Parameters(req): Parameters<StructInfoRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: struct_info");
+        debug!("Tool call: get_struct_info");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "struct_info",
+                    "get_struct_info",
                     json!({"ordinal": req.ordinal, "name": req.name}),
                 )
                 .await;
@@ -3597,17 +3545,17 @@ impl IdaMcpServer {
 
     #[tool(description = "Read values of a struct instance at an address")]
     #[instrument(skip(self), fields(address = %req.address, ordinal = req.ordinal, name = ?req.name))]
-    async fn read_struct(
+    async fn read_struct_at_address(
         &self,
         Parameters(req): Parameters<ReadStructRequest>,
     ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: read_struct");
+        debug!("Tool call: read_struct_at_address");
         if let ServerMode::Router(ref router) = self.mode {
             return self
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "read_struct",
+                    "read_struct_at_address",
                     json!({"address": req.address, "ordinal": req.ordinal, "name": req.name}),
                 )
                 .await;
@@ -3664,7 +3612,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "structs",
+                    "list_structs",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3756,7 +3704,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Apply a type to an address")]
-    async fn apply_types(
+    async fn apply_type(
         &self,
         Parameters(req): Parameters<ApplyTypesRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3765,7 +3713,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "apply_types",
+                    "apply_type",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3805,7 +3753,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Infer/guess type at an address")]
-    async fn infer_types(
+    async fn infer_type(
         &self,
         Parameters(req): Parameters<InferTypesRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3814,7 +3762,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "infer_types",
+                    "infer_type",
                     json!({"addr": req.address, "name": req.target_name, "offset": req.offset}),
                 )
                 .await;
@@ -3849,7 +3797,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "analyze_funcs",
+                    "run_auto_analysis",
                     json!({"timeout_secs": req.timeout_secs}),
                 )
                 .await;
@@ -3863,7 +3811,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Rename symbols")]
-    async fn rename(
+    async fn rename_symbol(
         &self,
         Parameters(req): Parameters<RenameRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3872,7 +3820,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "rename",
+                    "rename_symbol",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3898,7 +3846,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Rename a local variable in decompiled pseudocode")]
-    async fn rename_lvar(
+    async fn rename_local_variable(
         &self,
         Parameters(req): Parameters<RenameLvarRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3907,7 +3855,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "rename_lvar",
+                    "rename_local_variable",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3929,7 +3877,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Set the type of a local variable in decompiled pseudocode")]
-    async fn set_lvar_type(
+    async fn set_local_variable_type(
         &self,
         Parameters(req): Parameters<SetLvarTypeRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -3938,7 +3886,7 @@ impl IdaMcpServer {
                 .route_or_err(
                     router,
                     req.db_handle.as_deref(),
-                    "set_lvar_type",
+                    "set_local_variable_type",
                     serde_json::to_value(&req).unwrap_or_default(),
                 )
                 .await;
@@ -3996,7 +3944,7 @@ impl IdaMcpServer {
     }
 
     #[tool(description = "Patch bytes at an address")]
-    async fn patch(
+    async fn patch_bytes(
         &self,
         Parameters(req): Parameters<PatchRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -4556,6 +4504,8 @@ fn bytes_to_ascii(bytes: &[u8]) -> String {
 }
 
 fn tool_params_schema(name: &str) -> Option<Value> {
+    let name = crate::tool_registry::primary_name_for(name);
+
     fn schema<T: JsonSchema>() -> Value {
         serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| json!({}))
     }
@@ -4568,77 +4518,85 @@ fn tool_params_schema(name: &str) -> Option<Value> {
         "dsc_add_dylib" => Some(schema::<DscAddDylibRequest>()),
         "close_idb" => Some(schema::<CloseIdbRequest>()),
         "load_debug_info" => Some(schema::<LoadDebugInfoRequest>()),
-        "analysis_status" => Some(schema::<EmptyParams>()),
+        "get_analysis_status" => Some(schema::<EmptyParams>()),
         "tool_catalog" => Some(schema::<ToolCatalogRequest>()),
         "tool_help" => Some(schema::<ToolHelpRequest>()),
-        "idb_meta" => Some(schema::<EmptyParams>()),
+        "get_database_info" => Some(schema::<EmptyParams>()),
 
         // Functions
-        "list_functions" | "list_funcs" => Some(schema::<ListFunctionsRequest>()),
-        "resolve_function" => Some(schema::<ResolveFunctionRequest>()),
-        "addr_info" => Some(schema::<AddrInfoRequest>()),
-        "function_at" => Some(schema::<FunctionAtRequest>()),
-        "lookup_funcs" => Some(schema::<LookupFuncsRequest>()),
-        "analyze_funcs" => Some(schema::<AnalyzeFuncsRequest>()),
+        "list_functions" => Some(schema::<ListFunctionsRequest>()),
+        "get_function_by_name" => Some(schema::<ResolveFunctionRequest>()),
+        "get_address_info" => Some(schema::<AddrInfoRequest>()),
+        "get_function_at_address" => Some(schema::<FunctionAtRequest>()),
+        "batch_lookup_functions" => Some(schema::<LookupFuncsRequest>()),
+        "run_auto_analysis" => Some(schema::<AnalyzeFuncsRequest>()),
 
         // Disassembly / Decompile
-        "disasm" => Some(schema::<DisasmRequest>()),
-        "disasm_by_name" => Some(schema::<DisasmByNameRequest>()),
-        "disasm_function_at" => Some(schema::<DisasmFunctionAtRequest>()),
-        "decompile" => Some(schema::<DecompileRequest>()),
-        "pseudocode_at" => Some(schema::<PseudocodeAtRequest>()),
+        "disassemble" => Some(schema::<DisasmRequest>()),
+        "disassemble_function" => Some(schema::<DisasmByNameRequest>()),
+        "disassemble_function_at" => Some(schema::<DisasmFunctionAtRequest>()),
+        "decompile_function" => Some(schema::<DecompileRequest>()),
+        "get_pseudocode_at" => Some(schema::<PseudocodeAtRequest>()),
         "decompile_structured" => Some(schema::<DecompileStructuredRequest>()),
         "batch_decompile" => Some(schema::<BatchDecompileRequest>()),
         "search_pseudocode" => Some(schema::<SearchPseudocodeRequest>()),
-        "table_scan" => Some(schema::<TableScanRequest>()),
-        "diff_functions" => Some(schema::<DiffFunctionsRequest>()),
+        "scan_memory_table" => Some(schema::<TableScanRequest>()),
+        "diff_pseudocode" => Some(schema::<DiffFunctionsRequest>()),
 
         // Xrefs / Control flow
-        "xrefs_to" | "xrefs_from" => Some(schema::<AddressRequest>()),
-        "xref_matrix" => Some(schema::<XrefMatrixRequest>()),
-        "basic_blocks" | "callers" | "callees" => Some(schema::<AddressRequest>()),
-        "find_paths" => Some(schema::<FindPathsRequest>()),
-        "callgraph" => Some(schema::<CallGraphRequest>()),
+        "get_xrefs_to" | "get_xrefs_from" => Some(schema::<AddressRequest>()),
+        "build_xref_matrix" => Some(schema::<XrefMatrixRequest>()),
+        "get_basic_blocks" | "get_callers" | "get_callees" => Some(schema::<AddressRequest>()),
+        "find_control_flow_paths" => Some(schema::<FindPathsRequest>()),
+        "build_callgraph" => Some(schema::<CallGraphRequest>()),
 
         // Memory / Search / Metadata
-        "get_bytes" => Some(schema::<GetBytesRequest>()),
-        "get_string" => Some(schema::<GetStringRequest>()),
-        "get_u8" | "get_u16" | "get_u32" | "get_u64" => Some(schema::<AddressRequest>()),
-        "get_global_value" => Some(schema::<GetGlobalValueRequest>()),
-        "strings" => Some(schema::<StringsRequest>()),
-        "find_string" => Some(schema::<FindStringRequest>()),
-        "analyze_strings" => Some(schema::<AnalyzeStringsRequest>()),
-        "xrefs_to_string" => Some(schema::<XrefsToStringRequest>()),
-        "find_bytes" => Some(schema::<FindBytesRequest>()),
-        "search" => Some(schema::<SearchRequest>()),
+        "read_bytes" => Some(schema::<GetBytesRequest>()),
+        "read_string" => Some(schema::<GetStringRequest>()),
+        "read_byte" | "read_word" | "read_dword" | "read_qword" => Some(schema::<AddressRequest>()),
+        "read_global_variable" => Some(schema::<GetGlobalValueRequest>()),
+        "list_strings" => Some(schema::<ListStringsRequest>()),
+        "get_xrefs_to_string" => Some(schema::<XrefsToStringRequest>()),
+        "search_bytes" => Some(schema::<FindBytesRequest>()),
+        "search_text" => Some(schema::<SearchRequest>()),
         "find_insns" => Some(schema::<FindInsnsRequest>()),
         "find_insn_operands" => Some(schema::<FindInsnOperandsRequest>()),
-        "segments" => Some(schema::<EmptyParams>()),
-        "imports" | "exports" => Some(schema::<PaginatedRequest>()),
-        "export_funcs" => Some(schema::<ExportFuncsRequest>()),
-        "entrypoints" => Some(schema::<EmptyParams>()),
+        "list_segments" => Some(schema::<EmptyParams>()),
+        "list_imports" | "list_exports" => Some(schema::<PaginatedRequest>()),
+        "export_functions" => Some(schema::<ExportFuncsRequest>()),
+        "list_entry_points" => Some(schema::<EmptyParams>()),
         "list_globals" => Some(schema::<ListGlobalsRequest>()),
-        "int_convert" => Some(schema::<IntConvertRequest>()),
+        "convert_number" => Some(schema::<IntConvertRequest>()),
 
         // Editing
-        "set_comments" => Some(schema::<SetCommentsRequest>()),
-        "rename" => Some(schema::<RenameRequest>()),
-        "patch" => Some(schema::<PatchRequest>()),
-        "patch_asm" => Some(schema::<PatchAsmRequest>()),
+        "set_comment" => Some(schema::<SetCommentsRequest>()),
+        "rename_symbol" => Some(schema::<RenameRequest>()),
+        "rename_local_variable" => Some(schema::<RenameLvarRequest>()),
+        "set_local_variable_type" => Some(schema::<SetLvarTypeRequest>()),
+        "patch_bytes" => Some(schema::<PatchRequest>()),
+        "patch_assembly" => Some(schema::<PatchAsmRequest>()),
+        "set_function_prototype" => Some(schema::<EmptyParams>()),
+        "set_function_comment" => Some(schema::<EmptyParams>()),
+        "batch_rename" => Some(schema::<EmptyParams>()),
 
         // Types
-        "structs" => Some(schema::<StructsRequest>()),
-        "struct_info" => Some(schema::<StructInfoRequest>()),
-        "read_struct" => Some(schema::<ReadStructRequest>()),
+        "list_structs" => Some(schema::<StructsRequest>()),
+        "get_struct_info" => Some(schema::<StructInfoRequest>()),
+        "read_struct_at_address" => Some(schema::<ReadStructRequest>()),
         "search_structs" => Some(schema::<StructsRequest>()),
-        "local_types" => Some(schema::<LocalTypesRequest>()),
-        "xrefs_to_field" => Some(schema::<XrefsToFieldRequest>()),
-        "stack_frame" => Some(schema::<AddressRequest>()),
-        "declare_type" => Some(schema::<DeclareTypeRequest>()),
-        "apply_types" => Some(schema::<ApplyTypesRequest>()),
-        "infer_types" => Some(schema::<InferTypesRequest>()),
-        "declare_stack" => Some(schema::<DeclareStackRequest>()),
-        "delete_stack" => Some(schema::<DeleteStackRequest>()),
+        "list_local_types" => Some(schema::<LocalTypesRequest>()),
+        "get_xrefs_to_struct_field" => Some(schema::<XrefsToFieldRequest>()),
+        "get_stack_frame" => Some(schema::<AddressRequest>()),
+        "declare_c_type" => Some(schema::<DeclareTypeRequest>()),
+        "apply_type" => Some(schema::<ApplyTypesRequest>()),
+        "infer_type" => Some(schema::<InferTypesRequest>()),
+        "create_stack_variable" => Some(schema::<DeclareStackRequest>()),
+        "delete_stack_variable" => Some(schema::<DeleteStackRequest>()),
+        "get_function_prototype" => Some(schema::<AddressRequest>()),
+        "rename_stack_variable" => Some(schema::<EmptyParams>()),
+        "set_stack_variable_type" => Some(schema::<EmptyParams>()),
+        "list_enums" => Some(schema::<EmptyParams>()),
+        "create_enum" => Some(schema::<EmptyParams>()),
 
         // Scripting
         "run_script" => Some(schema::<RunScriptRequest>()),
@@ -4920,9 +4878,11 @@ impl<S: ServerHandler + Send + Sync> ServerHandler for SanitizedIdaServer<S> {
         // via #[tool]. Return a clear MCP error instead of blocking the server.
         if self.0.get_tool(&params.name).is_none() {
             warn!(tool = %params.name, "Unknown tool called — not registered in MCP tool router");
-            return Ok(ToolError::InvalidToolName(
-                format!("Unknown tool: {}. Use tool_catalog() to discover available tools.", params.name),
-            ).to_tool_result());
+            return Ok(ToolError::InvalidToolName(format!(
+                "Unknown tool: {}. Use tool_catalog() to discover available tools.",
+                params.name
+            ))
+            .to_tool_result());
         }
 
         self.0.call_tool(params, ctx).await
