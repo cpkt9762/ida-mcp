@@ -25,3 +25,4 @@ sdk/
 
 # Release
 dist/
+*.o
