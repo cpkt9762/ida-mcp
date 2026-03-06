@@ -17,6 +17,7 @@ pub mod strings;
 pub mod structs;
 pub mod types;
 pub mod xrefs;
+pub mod debug;
 
 use crate::error::ToolError;
 use idalib::IDB;

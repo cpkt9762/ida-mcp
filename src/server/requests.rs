@@ -1272,3 +1272,303 @@ pub struct DscAddRegionRequest {
     )]
     pub timeout_secs: Option<u64>,
 }
+
+// ==================== DEBUG TOOL REQUEST TYPES ====================
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgLoadDebuggerRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(
+        description = "Debugger module name: 'mac', 'linux', 'win32', 'gdb', 'windbg'. Defaults to platform-native."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debugger_name: Option<String>,
+    #[schemars(description = "Use remote debugger (default: false)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_remote: Option<bool>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgStartProcessRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(
+        description = "Path to the executable to debug. Defaults to the currently open IDB's target."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[schemars(description = "Command-line arguments for the process")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    #[schemars(description = "Working directory for the process")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_dir: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 60, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgAttachProcessRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "PID of the process to attach to")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u64>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgDetachProcessRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgExitProcessRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgGetStateRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgAddBreakpointRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(
+        description = "Address to set breakpoint (hex string like '0x100001234' or decimal)"
+    )]
+    pub address: String,
+    #[schemars(description = "Breakpoint size in bytes (default: 0 for software breakpoint)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[schemars(description = "Breakpoint type: 'soft' (default), 'exec', 'write', 'read', 'rdwr'")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpt_type: Option<String>,
+    #[schemars(description = "Optional breakpoint condition expression")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgDelBreakpointRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Address of breakpoint to delete (hex string or decimal)")]
+    pub address: String,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgEnableBreakpointRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Address of breakpoint to enable/disable (hex string or decimal)")]
+    pub address: String,
+    #[schemars(description = "true to enable, false to disable (default: true)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable: Option<bool>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgListBreakpointsRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgContinueRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgStepIntoRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgStepOverRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgStepUntilRetRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 60, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgRunToRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Target address to run to (hex string or decimal)")]
+    pub address: String,
+    #[schemars(description = "Execution timeout in seconds (default: 60, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgGetRegistersRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(
+        description = "Optional list of register names to read (e.g. ['rax', 'rip']). If omitted, reads all registers."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub register_names: Option<Vec<String>>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgSetRegisterRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Name of register to set (e.g. 'rax', 'rip')")]
+    pub register_name: String,
+    #[schemars(description = "New value for the register (hex string '0x...' or decimal)")]
+    pub value: String,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgReadMemoryRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Start address to read from (hex string or decimal)")]
+    pub address: String,
+    #[schemars(description = "Number of bytes to read (max: 4096)")]
+    pub size: u64,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgWriteMemoryRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Target address to write to (hex string or decimal)")]
+    pub address: String,
+    #[schemars(description = "Hex-encoded bytes to write (e.g. '4889c7' or '48 89 c7')")]
+    pub data: String,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgGetMemoryInfoRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgListThreadsRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgSelectThreadRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Thread ID to select as current thread")]
+    pub thread_id: u64,
+    #[schemars(description = "Execution timeout in seconds (default: 10, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DbgWaitEventRequest {
+    #[schemars(description = "Optional database handle for multi-IDB routing")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_handle: Option<String>,
+    #[schemars(description = "Timeout in seconds to wait for an event (default: 30, max: 600)")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[schemars(
+        description = "WFNE flags as hex string (e.g. '0x5' for WFNE_SUSP|WFNE_SILENT). Default: WFNE_SILENT."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<String>,
+}
