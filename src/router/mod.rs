@@ -332,12 +332,12 @@ impl RouterState {
             id
         };
 
-        // Extract timeout from tool params before they are consumed (default 120s, max 600s).
+        let max_timeout = if method == "open" { 3600 } else { 600 };
         let timeout_secs = params
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
             .unwrap_or(120)
-            .min(600);
+            .min(max_timeout);
 
         let (tx, rx) = oneshot::channel::<Result<serde_json::Value, String>>();
 
@@ -479,11 +479,19 @@ impl RouterState {
         &self,
         path: &str,
     ) -> Result<(DbHandle, String), crate::error::ToolError> {
+        self.ensure_worker_with_ref_idb(path, None).await
+    }
+
+    pub async fn ensure_worker_with_ref_idb(
+        &self,
+        path: &str,
+        explicit_idb_output: Option<&str>,
+    ) -> Result<(DbHandle, String), crate::error::ToolError> {
         use crate::error::ToolError;
 
         // Resolve sBPF .so → host-native dylib/i64 path for IDA.
         let resolved = resolve_open_path(path);
-        let open_path = resolved.as_deref().unwrap_or(path);
+        let open_path = resolved.open_path.as_deref().unwrap_or(path);
 
         let canonical =
             std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
@@ -511,15 +519,26 @@ impl RouterState {
                 self.release_ref_token(&token).await;
             }
 
+            let effective_idb_output = explicit_idb_output
+                .map(String::from)
+                .or(resolved.idb_output_path);
             let open_params = serde_json::json!({
                 "path": canonical_open.display().to_string(),
+                "idb_output_path": effective_idb_output,
                 "auto_analyse": true,
+                "timeout_secs": 3600,
             });
             match self.route_request(Some(&h), "open", open_params).await {
-                Ok(_) => {}
+                Ok(_) => {
+                    if let Some(ref idb_out) = effective_idb_output {
+                        let store = crate::idb_store::IdbStore::new();
+                        store.record(&canonical, &std::path::PathBuf::from(idb_out));
+                    }
+                    if is_sbpf_elf(&canonical) {
+                        self.detect_and_rename_sbpf_entry(&h).await;
+                    }
+                }
                 Err(e) => {
-                    // Open failed — clean up the spawned worker so it doesn't
-                    // linger as a zombie in the routing table.
                     warn!(handle = %h, error = %e, "open failed, cleaning up worker");
                     let _ = self.close_worker(&h).await;
                     return Err(e);
@@ -532,6 +551,81 @@ impl RouterState {
 
         Ok((handle, ref_token))
     }
+
+    async fn detect_and_rename_sbpf_entry(&self, handle: &str) {
+        let ep_addr: Option<u64> = self
+            .route_request(
+                Some(handle),
+                "get_function_by_name",
+                serde_json::json!({"name": "entrypoint"}),
+            )
+            .await
+            .ok()
+            .and_then(|v| v.get("address")?.as_str().map(String::from))
+            .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+
+        let Some(ep_addr) = ep_addr else { return };
+        let ep_hex = format!("0x{:x}", ep_addr);
+
+        let cg_val = match self
+            .route_request(
+                Some(handle),
+                "build_callgraph",
+                serde_json::json!({"roots": ep_hex, "max_depth": 2, "max_nodes": 256}),
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let edges = match cg_val.get("edges").and_then(|v| v.as_array()) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        let nodes = cg_val.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+        let addr_to_name: std::collections::HashMap<&str, &str> = nodes
+            .iter()
+            .filter_map(|n| Some((n.get("address")?.as_str()?, n.get("name")?.as_str()?)))
+            .collect();
+
+        let is_syscall = |addr: &str| {
+            addr_to_name
+                .get(addr)
+                .map(|name| name.starts_with("_sol_") || *name == "_abort")
+                .unwrap_or(false)
+        };
+
+        let direct: Vec<&str> = edges
+            .iter()
+            .filter_map(|e| {
+                if e.get("from")?.as_str()? == ep_hex { e.get("to")?.as_str() } else { None }
+            })
+            .filter(|addr| !is_syscall(addr))
+            .collect();
+        if direct.len() != 2 {
+            return;
+        }
+
+        let c0 = edges.iter().filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct[0])).count();
+        let c1 = edges.iter().filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct[1])).count();
+        if c0 == c1 {
+            return;
+        }
+        let pi_hex = if c0 > c1 { direct[0] } else { direct[1] };
+
+        let _ = self
+            .route_request(
+                Some(handle),
+                "rename_symbol",
+                serde_json::json!({"address": pi_hex, "new_name": "process_instruction"}),
+            )
+            .await;
+
+        info!(handle = %handle, pi = %pi_hex, "sBPF: renamed process_instruction");
+    }
+
 
     pub async fn close_by_path(
         &self,
@@ -626,7 +720,7 @@ const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 const EM_BPF: u16 = 247;
 const EM_SBF: u16 = 263;
 
-fn is_sbpf_elf(path: &std::path::Path) -> bool {
+pub fn is_sbpf_elf(path: &std::path::Path) -> bool {
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
@@ -642,33 +736,106 @@ fn is_sbpf_elf(path: &std::path::Path) -> bool {
     machine == EM_BPF || machine == EM_SBF
 }
 
-fn resolve_open_path(path: &str) -> Option<String> {
+struct ResolvedPath {
+    /// Path to pass to IDA for opening (may be .i64, .dylib, or the original binary)
+    open_path: Option<String>,
+    /// Where the .i64 should be saved (centralized path, only when not already cached)
+    idb_output_path: Option<String>,
+}
+
+fn resolve_open_path(path: &str) -> ResolvedPath {
     let input = crate::expand_path(path);
-    if !is_sbpf_elf(&input) {
-        return None;
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Already an IDA database — open directly
+    if ext == "i64" || ext == "idb" {
+        return ResolvedPath {
+            open_path: None,
+            idb_output_path: None,
+        };
     }
 
-    info!(path = %input.display(), "Detected sBPF ELF, resolving via sbpf2host");
+    let store = crate::idb_store::IdbStore::new();
 
-    let output_dir = crate::sbpf::resolve_output_dir(&input, None);
-    let dylib_path = crate::sbpf::sbpf2host_output_path(&input, Some(&output_dir));
-    let i64_path = dylib_path.with_extension("i64");
-    let id0_path = dylib_path.with_extension("id0");
+    // Check centralized IDB store first
+    if let Some(cached) = store.lookup(&input) {
+        info!(path = %cached.display(), "IDB store hit for {}", input.display());
+        return ResolvedPath {
+            open_path: Some(cached.display().to_string()),
+            idb_output_path: None,
+        };
+    }
 
+    // sBPF ELF handling
+    if is_sbpf_elf(&input) {
+        let idb_output = store.idb_path(&input).display().to_string();
+        // resolve_sbpf_path returns the dylib path to open
+        if let Some(open_path) = resolve_sbpf_path(&input) {
+            return ResolvedPath {
+                open_path: Some(open_path),
+                idb_output_path: Some(idb_output),
+            };
+        }
+        // sbpf2host failed — cannot open
+        return ResolvedPath {
+            open_path: None,
+            idb_output_path: None,
+        };
+    }
+
+    // Native binary — check for existing .i64 beside it (legacy location)
+    let i64_path = input.with_extension("i64");
+    let id0_path = input.with_extension("id0");
     if i64_path.exists() {
-        info!(path = %i64_path.display(), "sBPF fast-path: existing .i64");
-        return Some(i64_path.display().to_string());
+        info!(path = %i64_path.display(), "Fast-path: existing .i64 for raw binary");
+        return ResolvedPath {
+            open_path: Some(i64_path.display().to_string()),
+            idb_output_path: None,
+        };
     }
     if id0_path.exists() {
-        info!(path = %dylib_path.display(), "sBPF fast-path: existing unpacked .id0");
-        return Some(dylib_path.display().to_string());
+        info!(path = %input.display(), "Fast-path: existing unpacked .id0 for raw binary");
+        return ResolvedPath {
+            open_path: Some(input.display().to_string()),
+            idb_output_path: None,
+        };
     }
+
+    // No existing IDB — will be newly analyzed, store in centralized location
+    let idb_output = store.idb_path(&input).display().to_string();
+    ResolvedPath {
+        open_path: None,
+        idb_output_path: Some(idb_output),
+    }
+}
+
+fn resolve_sbpf_path(input: &std::path::Path) -> Option<String> {
+    info!(path = %input.display(), "Detected sBPF ELF, resolving via sbpf2host");
+
+    let output_dir = crate::sbpf::resolve_output_dir(input, None);
+    let dylib_path = crate::sbpf::sbpf2host_output_path(input, Some(&output_dir));
+
+    for candidate in [
+        dylib_path.with_extension("i64"),
+        dylib_path.with_extension("id0"),
+    ] {
+        if candidate.exists() {
+            let open = if candidate.extension().map(|e| e == "id0").unwrap_or(false) {
+                &dylib_path
+            } else {
+                &candidate
+            };
+            info!(path = %open.display(), "sBPF fast-path: existing database");
+            return Some(open.display().to_string());
+        }
+    }
+
     if dylib_path.exists() {
         info!(path = %dylib_path.display(), "sBPF fast-path: existing dylib");
         return Some(dylib_path.display().to_string());
     }
 
-    match crate::sbpf::run_sbpf2host(&input, Some(&output_dir), false) {
+    match crate::sbpf::run_sbpf2host(input, Some(&output_dir), false) {
         Ok(result) => {
             info!(dylib = %result.dylib_path.display(), "sbpf2host compilation succeeded");
             Some(result.dylib_path.display().to_string())

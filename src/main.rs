@@ -54,8 +54,7 @@ enum Command {
     /// Internal: worker subprocess controlled by a router.
     /// Reads JSON-RPC requests from stdin, dispatches to IDA worker, writes responses to stdout.
     ServeWorker,
-    /// Run a direct CLI probe to exercise idalib
-    Probe(ProbeArgs),
+
     /// CLI client: send commands to a running server via Unix socket
     Cli(ida_mcp::cli::CliArgs),
 }
@@ -182,17 +181,23 @@ struct ProbeArgs {
 fn main() -> anyhow::Result<()> {
     // Initialize logging:
     //   stderr : RUST_LOG  or  ida_mcp=info  (low-noise)
-    //   /tmp/ida-mcp.log : RUST_LOG  or  ida_mcp=debug  (verbose, for post-mortem)
+    //   ~/.ida/logs/server.log : RUST_LOG  or  ida_mcp=debug  (verbose, for post-mortem)
+    let _ = ida_mcp::idb_store::ensure_dirs();
     {
         use std::fs::OpenOptions;
         use std::sync::Mutex;
 
-        const LOG_PATH: &str = "/tmp/ida-mcp.log";
+        let log_path_buf = ida_mcp::idb_store::log_path();
+        let log_path_str = log_path_buf.display().to_string();
         let stderr_layer = fmt::layer().with_writer(std::io::stderr).with_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("ida_mcp=info")),
         );
 
-        match OpenOptions::new().create(true).append(true).open(LOG_PATH) {
+        match OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path_buf)
+        {
             Ok(log_file) => {
                 let file_layer = fmt::layer()
                     .with_writer(Mutex::new(log_file))
@@ -207,10 +212,10 @@ fn main() -> anyhow::Result<()> {
                     .with(stderr_layer)
                     .with(file_layer)
                     .init();
-                eprintln!("[ida-mcp] log -> {LOG_PATH}");
+                eprintln!("[ida-mcp] log -> {log_path_str}");
             }
             Err(e) => {
-                eprintln!("[ida-mcp] warn: cannot open log file {LOG_PATH}: {e}");
+                eprintln!("[ida-mcp] warn: cannot open log file {log_path_str}: {e}");
                 tracing_subscriber::registry().with(stderr_layer).init();
             }
         }
@@ -221,12 +226,35 @@ fn main() -> anyhow::Result<()> {
         version = env!("CARGO_PKG_VERSION"),
         "=== ida-mcp started ==="
     );
+
+    // Detect if invoked as "ida-cli" → flat CLI mode
+    let exe_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+
+    if exe_name.as_deref() == Some("ida-cli") {
+        // If first arg is a server command, still use full Command parsing
+        // (auto_start_server() spawns self + "serve-http" arg)
+        let first_arg = std::env::args().nth(1);
+        let is_server_mode = matches!(
+            first_arg.as_deref(),
+            Some("serve" | "serve-http" | "serve-worker")
+        );
+
+        if !is_server_mode {
+            // Flat CLI mode: parse CliArgs directly
+            let args = ida_mcp::cli::CliArgs::parse();
+            return run_cli(args);
+        }
+    }
+
+    // Server mode: full Command parsing
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Serve(ServeArgs::default())) {
         Command::Serve(args) => run_server(args),
         Command::ServeHttp(args) => run_server_http(args),
         Command::ServeWorker => run_serve_worker(),
-        Command::Probe(args) => run_probe(args),
+
         Command::Cli(args) => run_cli(args),
     }
 }
@@ -242,14 +270,9 @@ async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-
-        let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
-        let mut sigquit = signal(SignalKind::quit())?;
         tokio::select! {
-            _ = sigterm.recv() => {},
             _ = sigint.recv() => {},
-            _ = sigquit.recv() => {},
             _ = tokio::signal::ctrl_c() => {},
         }
     }
@@ -269,6 +292,21 @@ fn run_server(_args: ServeArgs) -> anyhow::Result<()> {
 fn run_server_multi() -> anyhow::Result<()> {
     info!("Starting IDA MCP Server (multi-IDB router mode)");
 
+    if ida_mcp::idb_store::socket_is_live() {
+        let pid = std::fs::read_to_string(ida_mcp::idb_store::pid_path()).unwrap_or_default();
+        anyhow::bail!(
+            "Another server instance is already running (pid {}). \
+             Use `ida-cli server-stop` to stop it first.",
+            pid.trim()
+        );
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+    }
+
     let router = ida_mcp::router::RouterState::new()?;
 
     let (tx, _rx) = mpsc::sync_channel(REQUEST_QUEUE_CAPACITY);
@@ -281,6 +319,11 @@ fn run_server_multi() -> anyhow::Result<()> {
             .expect("Failed to create tokio runtime");
 
         rt.block_on(async move {
+            let _ = std::fs::write(
+                ida_mcp::idb_store::pid_path(),
+                std::process::id().to_string(),
+            );
+
             info!("MCP server (router mode) listening on stdio");
             let server = IdaMcpServer::new(worker.clone(), ServerMode::Router(router.clone()));
             router.start_watchdog(
@@ -289,13 +332,16 @@ fn run_server_multi() -> anyhow::Result<()> {
                 None,
             );
 
-            let socket_path = PathBuf::from(format!("/tmp/ida-mcp-{}.sock", std::process::id()));
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let socket_path = ida_mcp::idb_store::socket_path();
             let socket_path_cleanup = socket_path.clone();
             let router_for_socket = router.clone();
+            let cancel_for_socket = cancel.clone();
             tokio::spawn(async move {
                 if let Err(e) = ida_mcp::server::socket_listener::run_socket_listener(
                     socket_path,
                     router_for_socket,
+                    cancel_for_socket,
                 )
                 .await
                 {
@@ -316,6 +362,13 @@ fn run_server_multi() -> anyhow::Result<()> {
                     ida_mcp::server::socket_listener::cleanup_socket_files(&socket_path_cleanup);
                     shutdown_signal.notify_one();
                 }
+            });
+
+            let cancel_watch = cancel.clone();
+            let shutdown_signal_cancel = shutdown_notify.clone();
+            tokio::spawn(async move {
+                cancel_watch.cancelled().await;
+                shutdown_signal_cancel.notify_one();
             });
 
             loop {
@@ -340,6 +393,8 @@ fn run_server_multi() -> anyhow::Result<()> {
             }
             info!("MCP server shutting down (router mode)");
             router.shutdown_all().await;
+            let _ = std::fs::remove_file(ida_mcp::idb_store::pid_path());
+            let _ = std::fs::remove_file(ida_mcp::idb_store::socket_path());
             Ok::<_, anyhow::Error>(())
         })
     });
@@ -502,6 +557,21 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
         info!("--json-response is ignored unless --stateless is also set");
     }
 
+    if ida_mcp::idb_store::socket_is_live() {
+        let pid = std::fs::read_to_string(ida_mcp::idb_store::pid_path()).unwrap_or_default();
+        anyhow::bail!(
+            "Another server instance is already running (pid {}). \
+             Use `ida-cli server-stop` to stop it first.",
+            pid.trim()
+        );
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+    }
+
     let bind_addr: SocketAddr = args
         .bind
         .parse()
@@ -524,6 +594,11 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
             .expect("Failed to create tokio runtime");
 
         let result = rt.block_on(async move {
+            let _ = std::fs::write(
+                ida_mcp::idb_store::pid_path(),
+                std::process::id().to_string(),
+            );
+
             let session_manager = Arc::new(LocalSessionManager::default());
             let cancel = tokio_util::sync::CancellationToken::new();
             let cancel_for_config = cancel.clone();
@@ -553,16 +628,18 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
             router.start_watchdog(
                 std::time::Duration::from_secs(8 * 3600),
                 std::time::Duration::from_secs(5 * 60),
-                Some(std::time::Duration::from_secs(60)),
+                None,
             );
 
-            let socket_path = PathBuf::from(format!("/tmp/ida-mcp-{}.sock", std::process::id()));
+            let socket_path = ida_mcp::idb_store::socket_path();
             let socket_path_cleanup = socket_path.clone();
             let router_for_socket = router.clone();
+            let cancel_for_socket = cancel.clone();
             tokio::spawn(async move {
                 if let Err(e) = ida_mcp::server::socket_listener::run_socket_listener(
                     socket_path,
                     router_for_socket,
+                    cancel_for_socket,
                 )
                 .await
                 {
@@ -639,6 +716,8 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
         rt.block_on(router_for_final.shutdown_all());
     }
 
+    let _ = std::fs::remove_file(ida_mcp::idb_store::pid_path());
+    let _ = std::fs::remove_file(ida_mcp::idb_store::socket_path());
     info!("Server stopped");
     Ok(())
 }
@@ -693,8 +772,22 @@ fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
         db.map_err(|e| anyhow::anyhow!("Failed to open database: {}: {}", path.display(), e))?;
 
     let meta = db.meta();
+    let path_str = path.display().to_string();
+    let idb_path = {
+        let p = std::path::Path::new(&path_str);
+        if p.extension().and_then(|e| e.to_str()) == Some("i64") {
+            Some(path_str.clone())
+        } else {
+            let db_path = db.path();
+            if db_path.extension().and_then(|e| e.to_str()) == Some("i64") {
+                Some(db_path.display().to_string())
+            } else {
+                None
+            }
+        }
+    };
     let info = DbInfo {
-        path: path.display().to_string(),
+        path: path_str,
         file_type: format!("{:?}", meta.filetype()),
         processor: db.processor().long_name(),
         bits: if meta.is_64bit() {
@@ -707,6 +800,7 @@ fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
         function_count: db.function_count(),
         debug_info: None,
         analysis_status: ida::handlers::analysis::build_analysis_status(&db),
+        idb_path,
     };
     info!("Database opened in {}s", open_start.elapsed().as_secs());
     println!("{}", serde_json::to_string_pretty(&info)?);

@@ -289,22 +289,7 @@ pub static TOOL_REGISTRY: &[ToolInfo] = &[
         ],
         aliases: &[],
     },
-    ToolInfo {
-        name: "open_sbpf",
-        category: ToolCategory::Core,
-        short_desc: "Open a Solana sBPF program (.so) for analysis",
-        full_desc: "AOT-compile a Solana sBPF .so to a host-native shared library via sbpf2host, \
-                    then open it in IDA Pro with full Hex-Rays decompilation support. \
-                    IDA has no native Hex-Rays decompiler for sBPF; this conversion step is required \
-                    for decompile/pseudocode/callgraph tools to work on Solana program code. \
-                    Debug symbols (.dSYM) produced by sbpf2host are loaded automatically. \
-                    Requires sbpf2host (cargo install sbpf2host) or SBPF2HOST env var. \
-                    Returns the same db_handle and close_token as open_idb.",
-        example: r#"{"path": "~/programs/675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8.so"}"#,
-        default: false,
-        keywords: &["open", "solana", "sbpf", "bpf", "program", "so", "sbpf2host", "aot", "compile"],
-        aliases: &[],
-    },
+
     ToolInfo {
         name: "dsc_add_dylib",
         category: ToolCategory::Core,

@@ -356,7 +356,17 @@ impl IdaMcpServer {
         let i64_str = out_i64.display().to_string();
         let open_result = self
             .worker
-            .open(&i64_str, false, None, false, false, None, true, Vec::new())
+            .open(
+                &i64_str,
+                None,
+                false,
+                None,
+                false,
+                false,
+                None,
+                true,
+                Vec::new(),
+            )
             .await;
 
         let db_info = match open_result {
@@ -487,7 +497,17 @@ impl IdaMcpServer {
         // Phase 2: open the .i64 with idalib
         let i64_str = out_i64.display().to_string();
         let open_result = worker
-            .open(&i64_str, false, None, false, false, None, true, Vec::new())
+            .open(
+                &i64_str,
+                None,
+                false,
+                None,
+                false,
+                false,
+                None,
+                true,
+                Vec::new(),
+            )
             .await;
 
         let db_info = match open_result {
@@ -587,6 +607,9 @@ impl IdaMcpServer {
         router: &crate::router::RouterState,
         req: &OpenIdbRequest,
     ) -> Result<CallToolResult, McpError> {
+        let expanded = crate::expand_path(&req.path);
+        let is_sbpf = crate::router::is_sbpf_elf(&expanded);
+
         let (db_handle, close_token) = match router.spawn_worker(&req.path).await {
             Ok(r) => r,
             Err(e) => return Ok(ToolError::OpenFailed(e.to_string()).to_tool_result()),
@@ -626,11 +649,137 @@ impl IdaMcpServer {
                     "close_idb"
                 ]),
             );
+
+            if is_sbpf {
+                let sbpf_info = self.detect_sbpf_entry(router, &db_handle).await;
+                if let Value::Object(sbpf_map) = sbpf_info {
+                    for (k, v) in sbpf_map {
+                        map.insert(k, v);
+                    }
+                }
+            }
         }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&value).unwrap_or_else(|_| format!("{value:?}")),
         )]))
+    }
+
+    async fn detect_sbpf_entry(
+        &self,
+        router: &crate::router::RouterState,
+        db_handle: &str,
+    ) -> Value {
+        let ep_info: Option<Value> = match router
+            .route_request(
+                Some(db_handle),
+                "get_function_by_name",
+                json!({"name": "entrypoint"}),
+            )
+            .await
+        {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        };
+
+        let ep_addr = ep_info
+            .as_ref()
+            .and_then(|v| v.get("address"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+
+        let Some(ep_addr) = ep_addr else {
+            return json!({ "entrypoint": ep_info });
+        };
+
+        let cg: Option<Value> = router
+            .route_request(
+                Some(db_handle),
+                "build_callgraph",
+                json!({
+                    "roots": format!("0x{:x}", ep_addr),
+                    "max_depth": 2,
+                    "max_nodes": 256,
+                }),
+            )
+            .await
+            .ok();
+
+        let ep_hex = format!("0x{:x}", ep_addr);
+
+        let pi_info: Option<Value> = 'pi: {
+            let edges = match cg
+                .as_ref()
+                .and_then(|v| v.get("edges"))
+                .and_then(|v| v.as_array())
+            {
+                Some(e) => e.clone(),
+                None => break 'pi None,
+            };
+
+            let direct: Vec<&str> = edges
+                .iter()
+                .filter_map(|e| {
+                    if e.get("from")?.as_str()? == ep_hex {
+                        e.get("to")?.as_str()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if direct.len() != 2 {
+                break 'pi None;
+            }
+
+            let c0 = edges
+                .iter()
+                .filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct[0]))
+                .count();
+            let c1 = edges
+                .iter()
+                .filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct[1]))
+                .count();
+            if c0 == c1 {
+                break 'pi None;
+            }
+            let pi_hex = if c0 > c1 { direct[0] } else { direct[1] };
+            let pi_addr = match u64::from_str_radix(pi_hex.trim_start_matches("0x"), 16) {
+                Ok(a) => a,
+                Err(_) => break 'pi None,
+            };
+
+            let current_name = router
+                .route_request(
+                    Some(db_handle),
+                    "get_function_at_address",
+                    json!({"address": pi_hex}),
+                )
+                .await
+                .ok()
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from));
+
+            let _ = router
+                .route_request(
+                    Some(db_handle),
+                    "rename_symbol",
+                    json!({
+                        "address": pi_hex,
+                        "new_name": "process_instruction",
+                    }),
+                )
+                .await;
+
+            Some(json!({
+                "address": format!("0x{:x}", pi_addr),
+                "name": "process_instruction",
+                "previous_name": current_name,
+            }))
+        };
+
+        json!({
+            "entrypoint": ep_info,
+            "process_instruction": pi_info,
+        })
     }
 
     async fn close_idb_routed(
@@ -724,6 +873,7 @@ impl IdaMcpServer {
             .worker
             .open(
                 &req.path,
+                None,
                 req.load_debug_info.unwrap_or(false),
                 req.debug_info_path.clone(),
                 req.debug_info_verbose.unwrap_or(false),
@@ -772,448 +922,6 @@ impl IdaMcpServer {
             }
             Err(e) => Ok(e.to_tool_result()),
         }
-    }
-
-    #[tool(description = "Open a Solana sBPF program (.so) for analysis. \
-        Automatically AOT-compiles the sBPF binary to a host-native shared library via sbpf2host \
-        (if needed), then opens the result in IDA Pro with full Hex-Rays decompilation support. \
-        Fast-path tiers (checked in order): \
-          1. <program>.dylib.i64 exists  → open directly, skip sbpf2host (fastest, all renames preserved) \
-          2. <program>.dylib.id0 exists  → open unpacked IDA DB, skip sbpf2host \
-          3. <program>.dylib exists      → open dylib, skip sbpf2host \
-          4. none of the above           → run sbpf2host then open \
-        Existing locked databases (live .imcp) are detected and reported as DatabaseLocked. \
-        Dead-process lock files (.imcp with stale PID) are cleaned automatically. \
-        Debug symbols (.dSYM) are loaded automatically when present. \
-        Returns db_handle, close_token, sbpf_source, dylib_path, and compiled=true/false. \
-        Requires sbpf2host (cargo install sbpf2host) or SBPF2HOST env var. \
-        Example: open_sbpf(path: '~/programs/675kPX9.so')")]
-    #[instrument(skip(self), fields(path = %req.path))]
-    async fn open_sbpf(
-        &self,
-        Parameters(req): Parameters<OpenSbpfRequest>,
-    ) -> Result<CallToolResult, McpError> {
-        debug!("Tool call: open_sbpf");
-
-        if !Self::validate_path(&req.path) {
-            return Ok(ToolError::InvalidPath(req.path).to_tool_result());
-        }
-
-        // Override sbpf2host binary if caller specified an explicit path.
-        if let Some(ref explicit) = req.sbpf2host_path {
-            // SAFETY: set env only in this process; we're single-threaded at this point.
-            // Using a temp env override so find_sbpf2host() picks it up.
-            unsafe { std::env::set_var("SBPF2HOST", explicit) };
-        }
-
-        let input = crate::expand_path(&req.path);
-        let resolved_dir = crate::sbpf::resolve_output_dir(
-            &input,
-            req.output_dir.as_deref().map(std::path::Path::new),
-        );
-        let output_dir = Some(resolved_dir.as_path());
-        let dump_ir = req.dump_ir.unwrap_or(false);
-
-        let dylib_path = crate::sbpf::sbpf2host_output_path(&input, output_dir);
-        let dylib_str = dylib_path.display().to_string();
-
-        // IDA replaces the dylib extension with its database extension:
-        //   program.dylib  →  program.i64  (packed)
-        //   program.dylib  →  program.id0  (unpacked)
-        let i64_path = dylib_path.with_extension("i64");
-        let id0_path = dylib_path.with_extension("id0");
-
-        // Determine open path and whether sbpf2host compilation is needed.
-        // Lock detection (live .imcp) and stale-lock cleanup happen inside handle_open.
-        let (open_path_str, compiled, load_debug) = if i64_path.exists() {
-            // Fast path 1: packed .i64 exists — skip sbpf2host entirely.
-            info!(path = %i64_path.display(), "open_sbpf fast-path: existing .i64");
-            (i64_path.display().to_string(), false, false)
-        } else if id0_path.exists() {
-            // Fast path 2: unpacked .id0 exists — skip sbpf2host.
-            // Pass the dylib path; IDA/handle_open will find the adjacent .id0.
-            info!(path = %id0_path.display(), "open_sbpf fast-path: existing unpacked .id0");
-            (dylib_str.clone(), false, false)
-        } else if dylib_path.exists() {
-            // Fast path 3: dylib exists but no IDA database — skip sbpf2host.
-            let has_dsym = crate::sbpf::sbpf2host_dsym_path(&dylib_path).exists();
-            info!(path = %dylib_path.display(), "open_sbpf fast-path: existing dylib (skipping sbpf2host)");
-            (dylib_str.clone(), false, has_dsym)
-        } else {
-            // Full path: compile sBPF → host-native dylib via sbpf2host.
-            let result = match crate::sbpf::run_sbpf2host(&input, output_dir, dump_ir) {
-                Ok(r) => r,
-                Err(e) => return Ok(e.to_tool_result()),
-            };
-            let has_dsym = result.has_debug_info;
-            (result.dylib_path.display().to_string(), true, has_dsym)
-        };
-
-        let idb_req = OpenIdbRequest {
-            path: open_path_str.clone(),
-            load_debug_info: Some(load_debug),
-            debug_info_path: None,
-            debug_info_verbose: None,
-            force: None,
-            file_type: None,
-        };
-
-        // Delegate to open_idb routing (handles close_token, db_handle, quick_tools).
-        let mut result = if let ServerMode::Router(ref router) = self.mode {
-            self.open_idb_routed(router, &idb_req).await?
-        } else {
-            self.open_idb(Parameters(idb_req)).await?
-        };
-
-        // Extract db_handle from open result (needed for subsequent queries).
-        let db_handle: Option<String> = result.content.first().and_then(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => serde_json::from_str::<serde_json::Value>(&t.text)
-                .ok()
-                .and_then(|v| v.get("db_handle")?.as_str().map(String::from)),
-            _ => None,
-        });
-
-        // Try to resolve the Solana program entrypoint for convenience.
-        // The entrypoint!() macro produces a function named "entrypoint"
-        // in the AOT-compiled dylib — this is the real program logic entry,
-        // NOT the sbpf2host runtime wrapper ("sbpf_entrypoint").
-        let entrypoint_json = if let Some(ref handle) = db_handle {
-            if let ServerMode::Router(ref router) = self.mode {
-                match self
-                    .route_or_err(
-                        router,
-                        Some(handle),
-                        "get_function_by_name",
-                        json!({"name": "entrypoint"}),
-                    )
-                    .await
-                {
-                    Ok(r) if !r.is_error.unwrap_or(false) => {
-                        r.content.first().and_then(|c| match &c.raw {
-                            rmcp::model::RawContent::Text(t) => {
-                                serde_json::from_str::<serde_json::Value>(&t.text).ok()
-                            }
-                            _ => None,
-                        })
-                    }
-                    _ => None,
-                }
-            } else {
-                self.worker
-                    .resolve_function("entrypoint")
-                    .await
-                    .ok()
-                    .map(|info| {
-                        json!({
-                            "name": info.name,
-                            "address": info.address,
-                            "size": info.size,
-                        })
-                    })
-            }
-        } else {
-            None
-        };
-
-        // Try to detect process_instruction via callgraph analysis.
-        //
-        // Solana's entrypoint!() macro expands to exactly 2 calls:
-        //   1. deserialize(input)   — parse input buffer into accounts/data
-        //   2. process_instruction  — instruction dispatch (many sub-callees)
-        //
-        // Detection: entrypoint callgraph depth=2, exactly 2 direct callees,
-        // the one with more sub-callees is process_instruction.
-        // If the pattern doesn't match, we don't guess — return None.
-        let mut process_instruction_json: Option<serde_json::Value> = 'pi: {
-            let ep_addr = entrypoint_json
-                .as_ref()
-                .and_then(|ep| ep.get("address"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
-            let (Some(ep_addr), Some(ref handle)) = (ep_addr, &db_handle) else {
-                break 'pi None;
-            };
-
-            // Get callgraph from entrypoint (depth=2 to see sub-callees).
-            let cg_value: Option<serde_json::Value> =
-                if let ServerMode::Router(ref router) = self.mode {
-                    match self
-                        .route_or_err(
-                            router,
-                            Some(handle),
-                            "build_callgraph",
-                            json!({
-                                "roots": format!("0x{:x}", ep_addr),
-                                "max_depth": 2,
-                                "max_nodes": 256,
-                            }),
-                        )
-                        .await
-                    {
-                        Ok(r) if !r.is_error.unwrap_or(false) => {
-                            r.content.first().and_then(|c| match &c.raw {
-                                rmcp::model::RawContent::Text(t) => {
-                                    serde_json::from_str::<serde_json::Value>(&t.text).ok()
-                                }
-                                _ => None,
-                            })
-                        }
-                        _ => None,
-                    }
-                } else {
-                    self.worker.callgraph(ep_addr, 2, 256).await.ok()
-                };
-
-            let Some(cg) = cg_value else { break 'pi None };
-            let Some(edges) = cg.get("edges").and_then(|v| v.as_array()) else {
-                break 'pi None;
-            };
-
-            let ep_hex = format!("0x{:x}", ep_addr);
-
-            // Direct callees of entrypoint.
-            let direct_callees: Vec<&str> = edges
-                .iter()
-                .filter_map(|e| {
-                    if e.get("from")?.as_str()? == ep_hex {
-                        e.get("to")?.as_str()
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // Must be exactly 2 (deserialize + process_instruction).
-            if direct_callees.len() != 2 {
-                break 'pi None;
-            }
-
-            // Count sub-callees for each direct callee.
-            let count0 = edges
-                .iter()
-                .filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct_callees[0]))
-                .count();
-            let count1 = edges
-                .iter()
-                .filter(|e| e.get("from").and_then(|v| v.as_str()) == Some(direct_callees[1]))
-                .count();
-
-            // process_instruction has more sub-callees (instruction handlers).
-            // If counts are equal, we can't distinguish — skip.
-            if count0 == count1 {
-                break 'pi None;
-            }
-            let pi_hex = if count0 > count1 {
-                direct_callees[0]
-            } else {
-                direct_callees[1]
-            };
-            let Some(pi_addr) = u64::from_str_radix(pi_hex.trim_start_matches("0x"), 16).ok()
-            else {
-                break 'pi None;
-            };
-
-            // Get function info for the detected process_instruction.
-            if let ServerMode::Router(ref router) = self.mode {
-                match self
-                    .route_or_err(
-                        router,
-                        Some(handle),
-                        "get_function_at_address",
-                        json!({"address": pi_hex}),
-                    )
-                    .await
-                {
-                    Ok(r) if !r.is_error.unwrap_or(false) => {
-                        r.content.first().and_then(|c| match &c.raw {
-                            rmcp::model::RawContent::Text(t) => {
-                                serde_json::from_str::<serde_json::Value>(&t.text).ok()
-                            }
-                            _ => None,
-                        })
-                    }
-                    _ => None,
-                }
-            } else {
-                self.worker
-                    .function_at(Some(pi_addr), None, 0)
-                    .await
-                    .ok()
-                    .map(|info| {
-                        json!({
-                            "name": info.name,
-                            "address": info.address,
-                            "size": info.size,
-                        })
-                    })
-            }
-        };
-
-        // Rename the detected process_instruction in IDA for convenience.
-        // Update the JSON name field to reflect the rename.
-        if let Some(ref mut pi) = process_instruction_json {
-            if let Some(pi_addr_str) = pi.get("address").and_then(|v| v.as_str()).map(String::from)
-            {
-                let current_name = pi.get("name").and_then(|v| v.as_str()).map(String::from);
-                let renamed = if let Some(ref handle) = db_handle {
-                    if let ServerMode::Router(ref router) = self.mode {
-                        self.route_or_err(
-                            router,
-                            Some(handle),
-                            "rename_symbol",
-                            json!({
-                                "address": pi_addr_str,
-                                "new_name": "process_instruction",
-                            }),
-                        )
-                        .await
-                        .is_ok()
-                    } else if let Some(addr) =
-                        u64::from_str_radix(pi_addr_str.trim_start_matches("0x"), 16).ok()
-                    {
-                        self.worker
-                            .rename(Some(addr), current_name, "process_instruction".into(), 0)
-                            .await
-                            .is_ok()
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-                if renamed {
-                    if let Some(map) = pi.as_object_mut() {
-                        map.insert("name".to_string(), json!("process_instruction"));
-                    }
-                }
-            }
-        }
-
-        // Import sbpf_runtime.h types (only once per database)
-        let runtime_types_result: Option<serde_json::Value> = 'import_types: {
-            if req.skip_runtime_types {
-                info!("Skipping sbpf_runtime.h types import (skip_runtime_types=true)");
-                break 'import_types None;
-            }
-
-            // Check if SbpfContext type already exists
-            let already_imported = if let Some(ref handle) = db_handle {
-                if let ServerMode::Router(ref router) = self.mode {
-                    match self
-                        .route_or_err(
-                            router,
-                            Some(handle),
-                            "local_types",
-                            json!({"filter": "SbpfContext", "limit": 1}),
-                        )
-                        .await
-                    {
-                        Ok(r) if !r.is_error.unwrap_or(false) => r
-                            .content
-                            .first()
-                            .and_then(|c| match &c.raw {
-                                rmcp::model::RawContent::Text(t) => {
-                                    serde_json::from_str::<serde_json::Value>(&t.text).ok()
-                                }
-                                _ => None,
-                            })
-                            .and_then(|v| v.get("total")?.as_u64())
-                            .map(|n| n > 0)
-                            .unwrap_or(false),
-                        _ => false,
-                    }
-                } else {
-                    self.worker
-                        .local_types(0, 1, Some("SbpfContext".to_string()), None)
-                        .await
-                        .map(|r| r.total > 0)
-                        .unwrap_or(false)
-                }
-            } else {
-                false
-            };
-
-            if already_imported {
-                info!("sbpf_runtime.h types already imported, skipping");
-                break 'import_types Some(json!({
-                    "imported": false,
-                    "reason": "already_exists"
-                }));
-            }
-
-            // Read header file from bundled assets
-            let header_content = include_str!("../../assets/sbpf/sbpf_runtime.h");
-
-            // Import types using declare_type with multi=true
-            let import_ok = if let Some(ref handle) = db_handle {
-                if let ServerMode::Router(ref router) = self.mode {
-                    self.route_or_err(
-                        router,
-                        Some(handle),
-                        "declare_types",
-                        json!({
-                            "decl": header_content,
-                            "relaxed": true,
-                            "multi": true
-                        }),
-                    )
-                    .await
-                    .is_ok()
-                } else {
-                    self.worker
-                        .declare_type(header_content.to_string(), true, false, true)
-                        .await
-                        .is_ok()
-                }
-            } else {
-                false
-            };
-
-            if import_ok {
-                info!("sbpf_runtime.h types imported successfully");
-                Some(json!({
-                    "imported": true,
-                    "types": ["SbpfContext", "SolBytes", "RuntimeConfigFFI", "ExecContext"],
-                    "hint": "Use set_function_prototype to apply these types to sol_* syscalls. Example: set_function_prototype(address='sol_log_', prototype='void sol_log_(const SbpfContext *ctx, const uint8_t *msg, uint64_t len)')"
-                }))
-            } else {
-                warn!("Failed to import sbpf_runtime.h types");
-                Some(json!({
-                    "imported": false,
-                    "reason": "declare_types_failed"
-                }))
-            }
-        };
-
-        // Annotate response with sBPF-specific fields.
-        if let Some(text) = result.content.first_mut().and_then(|c| {
-            if let rmcp::model::RawContent::Text(ref mut t) = c.raw {
-                Some(t)
-            } else {
-                None
-            }
-        }) {
-            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&text.text) {
-                if let Some(map) = val.as_object_mut() {
-                    map.insert("sbpf_source".to_string(), json!(req.path));
-                    map.insert("dylib_path".to_string(), json!(dylib_str));
-                    map.insert("compiled".to_string(), json!(compiled));
-                    if let Some(ep) = entrypoint_json {
-                        map.insert("entrypoint".to_string(), ep);
-                    }
-                    if let Some(pi) = process_instruction_json {
-                        map.insert("process_instruction".to_string(), pi);
-                    }
-                    if let Some(rt) = runtime_types_result {
-                        map.insert("runtime_types".to_string(), rt);
-                    }
-                }
-                text.text =
-                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| text.text.clone());
-            }
-        }
-
-        Ok(result)
     }
 
     #[tool(
