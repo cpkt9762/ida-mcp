@@ -4,9 +4,17 @@ use crate::tool_registry::primary_name_for;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixListener;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-pub async fn run_socket_listener(socket_path: PathBuf, router: RouterState) -> anyhow::Result<()> {
+/// Run the CLI socket listener. `shutdown` is the service-wide cancel token
+/// that outer accept loops (stdio / HTTP) also watch; the shutdown RPC
+/// triggers it so the whole service exits, not just the workers.
+pub async fn run_socket_listener(
+    socket_path: PathBuf,
+    router: RouterState,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
     }
@@ -18,14 +26,25 @@ pub async fn run_socket_listener(socket_path: PathBuf, router: RouterState) -> a
     std::fs::write(discovery_path, socket_path.to_string_lossy().as_bytes())?;
 
     loop {
-        let (stream, _) = listener.accept().await?;
-        let router = router.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_cli_connection(stream, &router).await {
-                debug!("CLI connection ended: {}", e);
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("CLI socket listener: shutdown signalled, stopping accept loop");
+                break;
             }
-        });
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let router = router.clone();
+                let shutdown = shutdown.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_cli_connection(stream, &router, &shutdown).await {
+                        debug!("CLI connection ended: {}", e);
+                    }
+                });
+            }
+        }
     }
+
+    Ok(())
 }
 
 pub fn cleanup_socket_files(socket_path: &std::path::Path) {
@@ -36,6 +55,7 @@ pub fn cleanup_socket_files(socket_path: &std::path::Path) {
 async fn handle_cli_connection(
     stream: tokio::net::UnixStream,
     router: &RouterState,
+    shutdown: &CancellationToken,
 ) -> anyhow::Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -50,7 +70,7 @@ async fn handle_cli_connection(
 
     let resp = match serde_json::from_str::<RpcRequest>(trimmed) {
         Ok(req) => {
-            let (mut response, ref_guard) = dispatch_cli_request(&req, router).await;
+            let (mut response, ref_guard) = dispatch_cli_request(&req, router, shutdown).await;
             if let Some(result) = response.result.take() {
                 response.result = Some(super::response_cache::guard_response_size(
                     &req.method,
@@ -88,6 +108,7 @@ impl Drop for CliRefGuard {
 async fn dispatch_cli_request(
     req: &RpcRequest,
     router: &RouterState,
+    shutdown: &CancellationToken,
 ) -> (RpcResponse, Option<CliRefGuard>) {
     let method = primary_name_for(&req.method);
 
@@ -119,6 +140,9 @@ async fn dispatch_cli_request(
 
         "shutdown" => {
             router.shutdown_all().await;
+            // Trip the service-wide cancel token so the outer transport loop
+            // (stdio or HTTP) also exits instead of leaving a zombie server.
+            shutdown.cancel();
             let resp = RpcResponse::ok(
                 &req.id,
                 serde_json::json!({"ok": true, "message": "server shutting down"}),

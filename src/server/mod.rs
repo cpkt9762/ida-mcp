@@ -650,17 +650,14 @@ impl IdaMcpServer {
         router: &crate::router::RouterState,
         db_handle: &str,
     ) -> Value {
-        let ep_info: Option<Value> = match router
+        let ep_info: Option<Value> = router
             .route_request(
                 Some(db_handle),
                 "get_function_by_name",
                 json!({"name": "entrypoint"}),
             )
             .await
-        {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
+            .ok();
 
         let ep_addr = ep_info
             .as_ref()

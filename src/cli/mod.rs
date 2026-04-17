@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use format::OutputMode;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixStream;
@@ -282,7 +282,21 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             Ok(())
         }
         CliCommand::Raw { json_str } => {
-            let req = complete_envelope(&json_str, 1)?;
+            let mut req = complete_envelope(&json_str, 1)?;
+            // Keep the raw subcommand consistent with pipe: if `--path` /
+            // `--tenant` are supplied on the CLI and the request did not
+            // already pin them, inject the globals so `raw` behaves like
+            // the other direct subcommands.
+            if let Some(obj) = req.params.as_object_mut() {
+                if let Some(path) = args.path.as_deref() {
+                    obj.entry("path".to_string())
+                        .or_insert_with(|| serde_json::json!(path));
+                }
+                if let Some(tenant) = args.tenant.as_deref() {
+                    obj.entry("tenant_id".to_string())
+                        .or_insert_with(|| serde_json::json!(tenant));
+                }
+            }
             let resp = send_request(&socket_path, &req, timeout).await?;
             handle_response(&resp, &req.method, &output_mode)
         }
@@ -367,6 +381,8 @@ fn build_rpc_params(
         CliCommand::Close => "close",
         CliCommand::Status => "status",
         CliCommand::Shutdown => "shutdown",
+        // The variants below are dispatched in `run()` before `build_rpc_params`
+        // is ever called, so reaching them here would be a programmer mistake.
         CliCommand::Enqueue { .. }
         | CliCommand::TaskStatus { .. }
         | CliCommand::ListTasks
@@ -374,9 +390,12 @@ fn build_rpc_params(
         | CliCommand::FederationList
         | CliCommand::FederationRegister { .. }
         | CliCommand::FederationUnregister { .. }
-        | CliCommand::FederationHeartbeat { .. } => unreachable!(),
-        CliCommand::PrewarmMany { .. } => unreachable!(),
-        _ => unreachable!(),
+        | CliCommand::FederationHeartbeat { .. }
+        | CliCommand::PrewarmMany { .. }
+        | CliCommand::Raw { .. }
+        | CliCommand::Pipe => {
+            unreachable!("build_rpc_params called with a command handled directly in run()")
+        }
     };
 
     (method.to_string(), serde_json::Value::Object(params))
@@ -454,7 +473,7 @@ fn complete_envelope(raw: &str, seq: u64) -> anyhow::Result<RpcRequest> {
 }
 
 async fn send_request(
-    socket_path: &PathBuf,
+    socket_path: &Path,
     req: &RpcRequest,
     timeout: std::time::Duration,
 ) -> anyhow::Result<RpcResponse> {
@@ -499,7 +518,7 @@ async fn send_request(
 }
 
 async fn run_prewarm_many(
-    socket_path: &PathBuf,
+    socket_path: &Path,
     list_file: &str,
     jobs: usize,
     keep_warm: bool,
@@ -521,7 +540,7 @@ async fn run_prewarm_many(
     let mut handles = Vec::new();
 
     for (idx, path) in paths.iter().enumerate() {
-        let socket_path = socket_path.clone();
+        let socket_path = socket_path.to_path_buf();
         let path = path.clone();
         let semaphore = semaphore.clone();
         let tenant = tenant.clone();
@@ -583,7 +602,7 @@ fn handle_response(resp: &RpcResponse, method: &str, mode: &OutputMode) -> anyho
 }
 
 async fn run_pipe(
-    socket_path: &PathBuf,
+    socket_path: &Path,
     global_path: Option<&str>,
     mode: &OutputMode,
 ) -> anyhow::Result<()> {
@@ -606,7 +625,7 @@ async fn run_pipe(
                 let mut req = match complete_envelope(trimmed, seq) {
                     Ok(r) => r,
                     Err(e) => {
-                        let err_resp = RpcResponse::err(&seq.to_string(), -32700, e.to_string());
+                        let err_resp = RpcResponse::err(seq.to_string(), -32700, e.to_string());
                         println!("{}", serde_json::to_string(&err_resp).unwrap_or_default());
                         seq += 1;
                         continue;
@@ -614,7 +633,7 @@ async fn run_pipe(
                 };
 
                 if let Some(p) = global_path {
-                    if !req.params.get("path").is_some() {
+                    if req.params.get("path").is_none() {
                         if let Some(obj) = req.params.as_object_mut() {
                             obj.insert("path".to_string(), serde_json::json!(p));
                         }

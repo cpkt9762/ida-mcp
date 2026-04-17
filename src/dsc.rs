@@ -231,7 +231,7 @@ def dscu_load_region(ea):
     node = idaapi.netnode()
     node.create(\"$ dscu\")
     node.altset(3, ea)
-    run_plugin_checked(\"dscu\", 2, \"loading region {ea_hex}\", True)
+    run_plugin_checked(\"dscu\", 2, f\"loading region 0x{{ea:x}}\", True)
 
 print(\"[ida-cli] loading DSC region: {ea_hex}\")
 dscu_load_region({ea})
@@ -389,7 +389,10 @@ mod tests {
         assert!(script.contains("def dscu_load_region(ea)"));
         assert!(script.contains("node.altset(3, ea)"));
         assert!(script.contains("run_plugin_checked(\"dscu\", 2"));
-        assert!(script.contains("loading region 0x180116000"));
+        // The error context uses a Python f-string so it reflects the real
+        // argument even when dscu_load_region is called multiple times.
+        assert!(script.contains("f\"loading region 0x{ea:x}\""));
+        assert!(script.contains("loading DSC region: 0x180116000"));
         assert!(script.contains("dscu_load_region(6443589632)"));
         assert!(script.contains("dsc_add_region complete for: 0x180116000"));
     }

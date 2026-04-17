@@ -104,6 +104,12 @@ pub struct IdbStore {
     root: PathBuf,
 }
 
+impl Default for IdbStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IdbStore {
     /// Create a store using the default idb root (`~/.ida/idb/`).
     pub fn new() -> Self {

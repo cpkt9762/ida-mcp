@@ -115,9 +115,22 @@ Notes:
 
 ## Shutdown
 
-The server listens for `SIGINT` / `SIGTERM` / `SIGQUIT` and closes every
-open database before exiting when possible. From the client side:
+The server only responds to `SIGINT` (Ctrl-C). `SIGHUP` and `SIGTERM` are
+explicitly ignored so the service survives accidental parent-process signals
+and terminal disconnects; use `ida-cli shutdown` or `SIGINT` for a clean
+exit. When shutdown is triggered, the router closes every open database
+before exiting.
+
+From the client side:
 
 ```bash
 ida-cli shutdown
+```
+
+As a last resort (force kill, no clean database close):
+
+```bash
+kill -INT "$(cat ~/.ida/server.pid)"
+# or, if the server is unresponsive:
+kill -9  "$(cat ~/.ida/server.pid)"
 ```

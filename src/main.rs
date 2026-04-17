@@ -694,10 +694,12 @@ fn run_server_multi() -> anyhow::Result<()> {
             let socket_path = ida_mcp::idb_store::socket_path();
             let socket_path_cleanup = socket_path.clone();
             let router_for_socket = router.clone();
+            let cancel_for_socket = cancel.clone();
             tokio::spawn(async move {
                 if let Err(e) = ida_mcp::server::socket_listener::run_socket_listener(
                     socket_path,
                     router_for_socket,
+                    cancel_for_socket,
                 )
                 .await
                 {
@@ -710,11 +712,16 @@ fn run_server_multi() -> anyhow::Result<()> {
             let shutdown_notify = Arc::new(Notify::new());
             let shutdown_signal = shutdown_notify.clone();
             let router_for_signal = router.clone();
+            let cancel_for_signal = cancel.clone();
 
             tokio::spawn(async move {
                 if wait_for_shutdown_signal().await.is_ok() {
                     info!("Shutdown signal received (router mode)");
                     router_for_signal.shutdown_all().await;
+                    // Cancel first so the socket listener stops accepting,
+                    // then remove the unix socket files last to avoid racing
+                    // with an in-flight connection attempt.
+                    cancel_for_signal.cancel();
                     ida_mcp::server::socket_listener::cleanup_socket_files(&socket_path_cleanup);
                     shutdown_signal.notify_one();
                 }
@@ -750,7 +757,9 @@ fn run_server_multi() -> anyhow::Result<()> {
             info!("ida-cli server shutting down (router mode)");
             router.shutdown_all().await;
             let _ = std::fs::remove_file(ida_mcp::idb_store::pid_path());
-            let _ = std::fs::remove_file(ida_mcp::idb_store::socket_path());
+            ida_mcp::server::socket_listener::cleanup_socket_files(
+                &ida_mcp::idb_store::socket_path(),
+            );
             Ok::<_, anyhow::Error>(())
         })
     });
@@ -994,10 +1003,12 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
             let socket_path = ida_mcp::idb_store::socket_path();
             let socket_path_cleanup = socket_path.clone();
             let router_for_socket = router.clone();
+            let cancel_for_socket = cancel.clone();
             tokio::spawn(async move {
                 if let Err(e) = ida_mcp::server::socket_listener::run_socket_listener(
                     socket_path,
                     router_for_socket,
+                    cancel_for_socket,
                 )
                 .await
                 {
@@ -1082,7 +1093,7 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
     }
 
     let _ = std::fs::remove_file(ida_mcp::idb_store::pid_path());
-    let _ = std::fs::remove_file(ida_mcp::idb_store::socket_path());
+    ida_mcp::server::socket_listener::cleanup_socket_files(&ida_mcp::idb_store::socket_path());
     info!("Server stopped");
     Ok(())
 }
