@@ -1,16 +1,17 @@
 # ida-cli
 
-`ida-cli` 是一个无界面的 IDA CLI / MCP 服务端，支持根据运行时自动选择后端。
+`ida-cli` 是一个无界面的 IDA CLI 与 skill-first 工具集，支持根据运行时自动选择后端。
 
 [English README](README.md)
 
 ## 概览
 
-`ida-cli` 提供三种使用方式：
+`ida-cli` 现在主要围绕两个用户入口：
 
-- 通过 Unix Socket 的本地 CLI
-- 通过 stdio 的 MCP
-- 通过 Streamable HTTP 的 MCP
+- 本地 `ida-cli` 命令行
+- 给 agent 环境安装的 `ida-cli` skill
+
+底层服务层在需要时由 CLI 自动拉起和管理。
 
 当前有两类运行时后端：
 
@@ -79,7 +80,7 @@ export IDADIR="/path/to/ida/Contents/MacOS"
 export IDASDKDIR="/path/to/ida-sdk"
 
 cargo build --bin ida-cli
-./target/debug/ida-cli serve
+./target/debug/ida-cli --help
 ```
 
 ### 使用 CLI
@@ -148,7 +149,7 @@ SDK 路径支持两种布局：
 
 这是旧运行时兼容后端。它通过 `idat` 启动批处理脚本，跑 IDAPython，把结构化结果返回给 router。这样可以避开旧运行时上会直接把 worker 打崩的原生开库路径。
 
-### 缓存和路径
+### 缓存和本地运行时路径
 
 - 数据库缓存：`~/.ida/idb/`
 - 日志：`~/.ida/logs/server.log`

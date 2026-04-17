@@ -1,17 +1,17 @@
 # Documentation
 
-ida-cli is a headless IDA Pro MCP server with a discovery-first tool model.
+ida-cli is a CLI-first headless IDA Pro toolkit with an installable skill and an auto-managed local runtime.
 
 ## Design
 
-- **Full tool list by default** - Supports MCP clients that only register tools at connection time
-- **Tool discovery** - Use `tool_catalog` to find tools, `tool_help` for docs
-- **Streamable HTTP** - Multi-client support with streaming notifications
-- **Serialized IDA access** - All IDA work runs through a single worker thread
+- **CLI-first workflow** - the default user path is `ida-cli`, not a transport protocol
+- **Skill-first bootstrap** - the `ida-cli` skill can install and verify the CLI automatically
+- **Auto-managed local runtime** - normal use does not require manual server startup
+- **Serialized IDA access** - all IDA work still runs through a single worker thread internally
 
 ## Contents
 
 - [TOOLS.md](TOOLS.md) - Tool catalog and discovery workflow
-- [TRANSPORTS.md](TRANSPORTS.md) - Stdio vs Streamable HTTP
+- [TRANSPORTS.md](TRANSPORTS.md) - Internal transport and service notes
 - [BUILDING.md](BUILDING.md) - Build from source
 - [TESTING.md](TESTING.md) - Running tests

@@ -1,16 +1,17 @@
 # ida-cli
 
-Headless IDA CLI and MCP server for binary analysis with automatic runtime backend selection.
+Headless IDA CLI and skill-first toolkit for binary analysis with automatic runtime backend selection.
 
 [中文说明](README.zh-CN.md)
 
 ## Overview
 
-`ida-cli` exposes IDA Pro analysis over:
+`ida-cli` is centered on two user-facing entrypoints:
 
-- CLI over Unix socket
-- MCP over stdio
-- MCP over Streamable HTTP
+- the local `ida-cli` command-line interface
+- the installable `ida-cli` skill for agent environments
+
+The underlying service layer is started and managed automatically by the CLI when needed.
 
 It supports two runtime modes:
 
@@ -79,7 +80,7 @@ export IDADIR="/path/to/ida/Contents/MacOS"
 export IDASDKDIR="/path/to/ida-sdk"
 
 cargo build --bin ida-cli
-./target/debug/ida-cli serve
+./target/debug/ida-cli --help
 ```
 
 ### Use the CLI
@@ -148,7 +149,7 @@ This backend links against the vendored `idalib` line and is intended for newer 
 
 This backend shells out to `idat`, runs short IDAPython scripts, and returns structured JSON results to the router. It exists to keep older runtimes operational without hard-crashing workers.
 
-### Cache and socket paths
+### Cache and local runtime paths
 
 - Database cache: `~/.ida/idb/`
 - Logs: `~/.ida/logs/server.log`

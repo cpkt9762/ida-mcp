@@ -228,13 +228,11 @@ Generate the expression from the AST, then cross-check with disassembly.
 
 ---
 
-## Part 2: MCP and CLI Quick Reference
+## Part 2: CLI Quick Reference
 
-The IDA MCP server exposes dozens of tools. Use the reference page for common arguments:
+This skill is CLI-first. Use the CLI reference page for common commands and argument shapes:
 
-- [mcp-tool-reference.md](references/mcp-tool-reference.md)
-
-For CLI-first work, prefer `ida-cli` over raw MCP when the same operation is available.
+- [cli-tool-reference.md](references/cli-tool-reference.md)
 
 ### CLI Examples
 
@@ -410,7 +408,7 @@ Load only the reference that matches the current task. Do not read them all by d
 
 | Reference | Use when |
 |---|---|
-| [mcp-tool-reference.md](references/mcp-tool-reference.md) | tool parameters or capability lookup |
+| [cli-tool-reference.md](references/cli-tool-reference.md) | CLI command patterns and capability lookup |
 | [counterfactual-patch.md](references/counterfactual-patch.md) | counterfactual patching workflows |
 | [headless-api.md](references/headless-api.md) | headless IDA execution and API choice |
 | [idapython-cheatsheet.md](references/idapython-cheatsheet.md) | writing IDAPython scripts |

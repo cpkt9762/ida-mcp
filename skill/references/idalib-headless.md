@@ -368,7 +368,7 @@ idat -A -B binary.exe
 | [Haruspex](https://github.com/0xdea/haruspex) | Headless decompilation, exports pseudocode to files |
 | [Augur](https://github.com/0xdea/augur) | String extraction with xref-to-pseudocode mapping |
 | [headless-ida](https://pypi.org/project/headless-ida/) | Python wrapper for batch processing with idalib backend |
-| [headless-ida-mcp-server](https://github.com/MxIris-Reverse-Engineering/headless-ida-mcp-server) | MCP server for AI-powered RE via idalib |
+| [headless-ida-mcp-server](https://github.com/MxIris-Reverse-Engineering/headless-ida-mcp-server) | Headless automation server for AI-assisted reverse engineering via idalib |
 
 ---
 
