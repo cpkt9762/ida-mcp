@@ -882,6 +882,70 @@ impl RouterState {
         }
     }
 
+    pub async fn prewarm_path(
+        &self,
+        path: &str,
+    ) -> Result<serde_json::Value, crate::error::ToolError> {
+        use crate::error::ToolError;
+
+        let expanded = crate::expand_path(path);
+        if !expanded.exists() {
+            return Err(ToolError::InvalidPath(format!(
+                "File not found: {}",
+                expanded.display()
+            )));
+        }
+
+        let canonical = std::fs::canonicalize(&expanded).unwrap_or_else(|_| expanded.clone());
+        let already_open = {
+            let inner = self.inner.lock().await;
+            inner.path_to_handle.contains_key(&canonical)
+        };
+
+        let store = crate::idb_store::IdbStore::new();
+        let cached_before = store.lookup(&canonical).map(|p| p.display().to_string());
+
+        let (handle, ref_token) = self.ensure_worker_with_ref(path).await?;
+        let backend = {
+            let inner = self.inner.lock().await;
+            inner
+                .workers
+                .get(&handle)
+                .map(|worker| worker.backend.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+
+        let database_info = self
+            .route_request(Some(&handle), "get_database_info", serde_json::json!({}))
+            .await
+            .ok();
+
+        let cached_after = store.lookup(&canonical).map(|p| p.display().to_string());
+
+        let mut closed_worker = false;
+        if !already_open {
+            if let Some((_, remaining)) = self.release_ref_token(&ref_token).await {
+                if remaining == 0 {
+                    self.close_by_path(&canonical).await?;
+                    closed_worker = true;
+                }
+            }
+        } else {
+            self.release_ref_token(&ref_token).await;
+        }
+
+        Ok(serde_json::json!({
+            "path": canonical.display().to_string(),
+            "backend": backend,
+            "cached_before": cached_before.is_some(),
+            "cached_after": cached_after.is_some(),
+            "cache_path": cached_after,
+            "database_info": database_info,
+            "already_open": already_open,
+            "worker_closed_after_prewarm": closed_worker,
+        }))
+    }
+
     /// `auto_exit_grace`: `Some(duration)` → exit when no workers remain for that
     /// long. `None` → disable auto-exit (stdio MCP mode).
     pub fn start_watchdog(

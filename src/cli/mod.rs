@@ -62,6 +62,7 @@ pub enum CliCommand {
         limit: usize,
     },
     ListSegments,
+    Prewarm,
     Close,
     Status,
     Shutdown,
@@ -154,6 +155,7 @@ fn build_rpc_params(cmd: &CliCommand, path: Option<&str>) -> (String, serde_json
             "list_strings"
         }
         CliCommand::ListSegments => "list_segments",
+        CliCommand::Prewarm => "prewarm",
         CliCommand::Close => "close",
         CliCommand::Status => "status",
         CliCommand::Shutdown => "shutdown",

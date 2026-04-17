@@ -130,6 +130,18 @@ async fn dispatch_cli_request(
             (resp, None)
         }
 
+        "prewarm" => {
+            let resp = if let Some(ref p) = path {
+                match router.prewarm_path(p).await {
+                    Ok(value) => RpcResponse::ok(&req.id, value),
+                    Err(e) => RpcResponse::err(&req.id, -32000, e.to_string()),
+                }
+            } else {
+                RpcResponse::err(&req.id, -32001, "prewarm requires 'path' parameter")
+            };
+            (resp, None)
+        }
+
         _ => {
             let resolve_result = if let Some(ref p) = path {
                 router
