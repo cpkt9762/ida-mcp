@@ -63,6 +63,35 @@ pub enum CliCommand {
         #[arg(long)]
         addr: String,
     },
+    XrefsToString {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 10)]
+        max_xrefs: usize,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long, default_value_t = true)]
+        case_insensitive: bool,
+    },
+    Callers {
+        #[arg(long)]
+        addr: String,
+    },
+    Callees {
+        #[arg(long)]
+        addr: String,
+    },
+    AddressInfo {
+        #[arg(long)]
+        addr: String,
+    },
+    ListImports {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
     ListStrings {
         #[arg(long)]
         query: Option<String>,
@@ -216,7 +245,11 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             handle_response(&resp, "enqueue", &output_mode)
         }
         CliCommand::TaskStatus { task_id } => {
-            let req = RpcRequest::new("1", "task_status", serde_json::json!({ "task_id": task_id }));
+            let req = RpcRequest::new(
+                "1",
+                "task_status",
+                serde_json::json!({ "task_id": task_id }),
+            );
             let resp = send_request(&socket_path, &req, timeout).await?;
             handle_response(&resp, "task_status", &output_mode)
         }
@@ -226,7 +259,11 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             handle_response(&resp, "list_tasks", &output_mode)
         }
         CliCommand::CancelTask { task_id } => {
-            let req = RpcRequest::new("1", "cancel_task", serde_json::json!({ "task_id": task_id }));
+            let req = RpcRequest::new(
+                "1",
+                "cancel_task",
+                serde_json::json!({ "task_id": task_id }),
+            );
             let resp = send_request(&socket_path, &req, timeout).await?;
             handle_response(&resp, "cancel_task", &output_mode)
         }
@@ -302,7 +339,8 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             handle_response(&resp, &req.method, &output_mode)
         }
         cmd => {
-            let (method, params) = build_rpc_params(&cmd, args.path.as_deref(), args.tenant.as_deref());
+            let (method, params) =
+                build_rpc_params(&cmd, args.path.as_deref(), args.tenant.as_deref());
             let req = RpcRequest::new("1", &method, params);
             let resp = send_request(&socket_path, &req, timeout).await?;
             handle_response(&resp, &method, &output_mode)
@@ -357,6 +395,40 @@ fn build_rpc_params(
             params.insert("address".to_string(), serde_json::json!(addr));
             "get_xrefs_to"
         }
+        CliCommand::XrefsToString {
+            query,
+            limit,
+            max_xrefs,
+            exact,
+            case_insensitive,
+        } => {
+            params.insert("query".to_string(), serde_json::json!(query));
+            params.insert("limit".to_string(), serde_json::json!(limit));
+            params.insert("max_xrefs".to_string(), serde_json::json!(max_xrefs));
+            params.insert("exact".to_string(), serde_json::json!(exact));
+            params.insert(
+                "case_insensitive".to_string(),
+                serde_json::json!(case_insensitive),
+            );
+            "get_xrefs_to_string"
+        }
+        CliCommand::Callers { addr } => {
+            params.insert("address".to_string(), serde_json::json!(addr));
+            "get_callers"
+        }
+        CliCommand::Callees { addr } => {
+            params.insert("address".to_string(), serde_json::json!(addr));
+            "get_callees"
+        }
+        CliCommand::AddressInfo { addr } => {
+            params.insert("address".to_string(), serde_json::json!(addr));
+            "get_address_info"
+        }
+        CliCommand::ListImports { limit, offset } => {
+            params.insert("limit".to_string(), serde_json::json!(limit));
+            params.insert("offset".to_string(), serde_json::json!(offset));
+            "list_imports"
+        }
         CliCommand::ListStrings { query, limit } => {
             params.insert("limit".to_string(), serde_json::json!(limit));
             if let Some(q) = query {
@@ -402,9 +474,67 @@ fn build_rpc_params(
     (method.to_string(), serde_json::Value::Object(params))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{build_rpc_params, CliCommand};
+
+    #[test]
+    fn build_rpc_params_for_cli_surface_methods() {
+        let (method, params) = build_rpc_params(
+            &CliCommand::ListImports {
+                limit: 5,
+                offset: 2,
+            },
+            Some("/tmp/a.bin"),
+            None,
+        );
+        assert_eq!(method, "list_imports");
+        assert_eq!(params["path"], "/tmp/a.bin");
+        assert_eq!(params["limit"], 5);
+        assert_eq!(params["offset"], 2);
+
+        let (method, params) = build_rpc_params(
+            &CliCommand::XrefsToString {
+                query: "malloc".to_string(),
+                limit: 4,
+                max_xrefs: 3,
+                exact: false,
+                case_insensitive: true,
+            },
+            Some("/tmp/a.bin"),
+            None,
+        );
+        assert_eq!(method, "get_xrefs_to_string");
+        assert_eq!(params["query"], "malloc");
+        assert_eq!(params["limit"], 4);
+        assert_eq!(params["max_xrefs"], 3);
+        assert_eq!(params["case_insensitive"], true);
+
+        let (method, params) = build_rpc_params(
+            &CliCommand::Callers {
+                addr: "0x1000".to_string(),
+            },
+            None,
+            None,
+        );
+        assert_eq!(method, "get_callers");
+        assert_eq!(params["address"], "0x1000");
+
+        let (method, params) = build_rpc_params(
+            &CliCommand::AddressInfo {
+                addr: "0x2000".to_string(),
+            },
+            None,
+            None,
+        );
+        assert_eq!(method, "get_address_info");
+        assert_eq!(params["address"], "0x2000");
+    }
+}
+
 fn admin_url(path: &str) -> String {
-    let base = std::env::var("IDA_CLI_ADMIN_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:9876".to_string());
+    let base =
+        std::env::var("IDA_CLI_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9876".to_string());
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 
@@ -418,10 +548,7 @@ fn reqwest_blocking_like(
         .host()
         .ok_or_else(|| anyhow::anyhow!("missing host in url"))?;
     let port = uri.port_u16().unwrap_or(80);
-    let path = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     // Don't rely on the OS TCP timeout: a wrong `--socket` / admin URL would
     // otherwise block the CLI for minutes.
     let connect_timeout = std::time::Duration::from_secs(5);
@@ -437,10 +564,11 @@ fn reqwest_blocking_like(
             Err(e) => last_err = Some(e),
         }
     }
-    let mut stream = stream
-        .ok_or_else(|| last_err
+    let mut stream = stream.ok_or_else(|| {
+        last_err
             .map(anyhow::Error::from)
-            .unwrap_or_else(|| anyhow::anyhow!("no addresses resolved for {host}:{port}")))?;
+            .unwrap_or_else(|| anyhow::anyhow!("no addresses resolved for {host}:{port}"))
+    })?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
 
@@ -598,7 +726,9 @@ async fn run_prewarm_many(
                 results.push(value);
             }
             Err(err) => {
-                results.push(serde_json::json!({ "path": path, "ok": false, "error": err.to_string() }));
+                results.push(
+                    serde_json::json!({ "path": path, "ok": false, "error": err.to_string() }),
+                );
             }
         }
     }
@@ -607,7 +737,10 @@ async fn run_prewarm_many(
         "count": results.len(),
         "results": results,
     });
-    println!("{}", format::format_response(output_mode, "prewarm_many", &output));
+    println!(
+        "{}",
+        format::format_response(output_mode, "prewarm_many", &output)
+    );
     Ok(())
 }
 

@@ -188,6 +188,37 @@ impl CompatWorker {
         xrefs_with_idat(&session.database_path, addr, false)
     }
 
+    fn xrefs_to_string(
+        &self,
+        query: &str,
+        exact: bool,
+        case_insensitive: bool,
+        offset: usize,
+        limit: usize,
+        max_xrefs: usize,
+    ) -> Result<Value, ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
+        xrefs_to_string_with_idat(
+            &session.database_path,
+            query,
+            exact,
+            case_insensitive,
+            offset,
+            limit,
+            max_xrefs,
+        )
+    }
+
+    fn callers(&self, addr: u64) -> Result<Value, ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
+        callers_with_idat(&session.database_path, addr)
+    }
+
+    fn callees(&self, addr: u64) -> Result<Value, ToolError> {
+        let session = self.session.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
+        callees_with_idat(&session.database_path, addr)
+    }
+
     fn imports(&self, offset: usize, limit: usize) -> Result<Value, ToolError> {
         let session = self.session.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
         imports_with_idat(&session.database_path, offset, limit)
@@ -464,6 +495,22 @@ fn dispatch_request(worker: &mut CompatWorker, req: &RpcRequest) -> RpcResponse 
                 Err(err) => Err(err),
             }
         }
+        "get_xrefs_to_string" => {
+            let query = params["query"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("missing query".to_string()));
+            let exact = params["exact"].as_bool().unwrap_or(false);
+            let case_insensitive = params["case_insensitive"].as_bool().unwrap_or(true);
+            let offset = params["offset"].as_u64().unwrap_or(0) as usize;
+            let limit = params["limit"].as_u64().unwrap_or(100) as usize;
+            let max_xrefs = params["max_xrefs"].as_u64().unwrap_or(64) as usize;
+            match query {
+                Ok(query) => {
+                    worker.xrefs_to_string(query, exact, case_insensitive, offset, limit, max_xrefs)
+                }
+                Err(err) => Err(err),
+            }
+        }
         "list_imports" => {
             let offset = params["offset"].as_u64().unwrap_or(0) as usize;
             let limit = params["limit"].as_u64().unwrap_or(100) as usize;
@@ -564,6 +611,26 @@ fn dispatch_request(worker: &mut CompatWorker, req: &RpcRequest) -> RpcResponse 
             match (addr1, addr2) {
                 (Ok(addr1), Ok(addr2)) => worker.diff_pseudocode(addr1, addr2),
                 (Err(err), _) | (_, Err(err)) => Err(err),
+            }
+        }
+        "get_callers" => {
+            let addr = params
+                .get("address")
+                .and_then(parse_address_value)
+                .ok_or_else(|| ToolError::InvalidAddress("missing address".to_string()));
+            match addr {
+                Ok(addr) => worker.callers(addr),
+                Err(err) => Err(err),
+            }
+        }
+        "get_callees" => {
+            let addr = params
+                .get("address")
+                .and_then(parse_address_value)
+                .ok_or_else(|| ToolError::InvalidAddress("missing address".to_string()));
+            match addr {
+                Ok(addr) => worker.callees(addr),
+                Err(err) => Err(err),
             }
         }
         _ => Err(ToolError::NotSupported(format!(
@@ -1222,6 +1289,162 @@ exit_ok()
 
     run_idat_script(database_path, None, &script)?;
     read_json_value(&output_path)
+}
+
+fn xrefs_to_string_with_idat(
+    database_path: &Path,
+    query: &str,
+    exact: bool,
+    case_insensitive: bool,
+    offset: usize,
+    limit: usize,
+    max_xrefs: usize,
+) -> Result<Value, ToolError> {
+    let output_path = temp_path("xrefs-to-string", "json");
+    let query_literal = escape_python_string(query);
+    let script = format!(
+        "{}\nQUERY = '{}'\nEXACT = {}\nCASE_INSENSITIVE = {}\nOFFSET = {offset}\nLIMIT = {limit}\nMAX_XREFS = {}\n{}",
+        python_prelude(&output_path, database_path),
+        query_literal,
+        if exact { "True" } else { "False" },
+        if case_insensitive { "True" } else { "False" },
+        max_xrefs.clamp(1, 1024),
+        r#"
+import idautils
+
+items = []
+query = QUERY.lower() if CASE_INSENSITIVE else QUERY
+
+for item in idautils.Strings():
+    try:
+        content = str(item)
+    except Exception:
+        content = ""
+    hay = content.lower() if CASE_INSENSITIVE else content
+    matched = hay == query if EXACT else query in hay
+    if not matched:
+        continue
+
+    xrefs = []
+    for xref in idautils.XrefsTo(item.ea, 0):
+        xrefs.append(hex(xref.frm))
+        if len(xrefs) >= MAX_XREFS:
+            break
+
+    items.append({
+        "address": hex(item.ea),
+        "content": content,
+        "length": int(item.length),
+        "xrefs": xrefs,
+        "xref_count": len(xrefs),
+    })
+
+total = len(items)
+page = items[OFFSET:OFFSET + LIMIT]
+next_offset = OFFSET + len(page)
+if next_offset >= total:
+    next_offset = None
+
+write_result({
+    "strings": page,
+    "total": total,
+    "next_offset": next_offset,
+})
+exit_ok()
+"#
+    );
+
+    run_idat_script(database_path, None, &script)?;
+    read_json_value(&output_path)
+}
+
+fn callers_with_idat(database_path: &Path, addr: u64) -> Result<Value, ToolError> {
+    let output_path = temp_path("callers", "json");
+    let script = format!(
+        "{}\nADDR = {addr}\n{}",
+        python_prelude(&output_path, database_path),
+        r#"
+import ida_funcs
+import idautils
+import ida_xref
+
+target = ida_funcs.get_func(ADDR)
+if not target:
+    write_result({"error": f"Function not found at {hex(ADDR)}"})
+    exit_ok()
+
+seen = set()
+callers = []
+for xref in idautils.XrefsTo(target.start_ea, ida_xref.XREF_ALL):
+    caller = ida_funcs.get_func(xref.frm)
+    if not caller:
+        continue
+    if caller.start_ea in seen:
+        continue
+    seen.add(caller.start_ea)
+    callers.append({
+        "address": hex(caller.start_ea),
+        "name": ida_funcs.get_func_name(caller.start_ea) or f"sub_{caller.start_ea:x}",
+        "size": int(caller.end_ea - caller.start_ea),
+    })
+
+write_result(callers)
+exit_ok()
+"#
+    );
+
+    run_idat_script(database_path, None, &script)?;
+    let value = read_json_value(&output_path)?;
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        return Err(ToolError::IdaError(error.to_string()));
+    }
+    Ok(value)
+}
+
+fn callees_with_idat(database_path: &Path, addr: u64) -> Result<Value, ToolError> {
+    let output_path = temp_path("callees", "json");
+    let script = format!(
+        "{}\nADDR = {addr}\n{}",
+        python_prelude(&output_path, database_path),
+        r#"
+import ida_funcs
+import idautils
+import ida_xref
+
+func = ida_funcs.get_func(ADDR)
+if not func:
+    write_result({"error": f"Function not found at {hex(ADDR)}"})
+    exit_ok()
+
+seen = set()
+callees = []
+for ea in idautils.FuncItems(func.start_ea):
+    for xref in idautils.XrefsFrom(ea, ida_xref.XREF_ALL):
+        if xref.type not in (ida_xref.fl_CN, ida_xref.fl_CF):
+            continue
+        callee = ida_funcs.get_func(xref.to)
+        if not callee:
+            continue
+        if callee.start_ea in seen:
+            continue
+        seen.add(callee.start_ea)
+        callees.append({
+            "address": hex(callee.start_ea),
+            "name": ida_funcs.get_func_name(callee.start_ea) or f"sub_{callee.start_ea:x}",
+            "size": int(callee.end_ea - callee.start_ea),
+        })
+
+write_result(callees)
+exit_ok()
+"#
+    );
+
+    run_idat_script(database_path, None, &script)?;
+    let value = read_json_value(&output_path)?;
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        return Err(ToolError::IdaError(error.to_string()));
+    }
+    Ok(value)
 }
 
 fn imports_with_idat(

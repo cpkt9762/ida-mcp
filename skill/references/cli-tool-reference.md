@@ -39,6 +39,11 @@ ida-cli --path <file> decompile --addr 0x1000
 ida-cli --path <file> disasm --addr 0x1000 [--count 20]
 ida-cli --path <file> disasm --name main [--count 20]
 ida-cli --path <file> xrefs-to --addr 0x1000
+ida-cli --path <file> xrefs-to-string usage [--limit 20] [--max-xrefs 10]
+ida-cli --path <file> callers --addr 0x1000
+ida-cli --path <file> callees --addr 0x1000
+ida-cli --path <file> address-info --addr 0x1000
+ida-cli --path <file> list-imports [--limit 100] [--offset 0]
 ida-cli --path <file> list-strings [--query ERROR] [--limit 100]
 ida-cli --path <file> list-segments
 ```
@@ -68,10 +73,9 @@ ida-cli shutdown
 
 ## Everything Else Goes Through `raw` or `pipe`
 
-The direct subcommands cover only the most common reads. For renaming,
-commenting, type work, xrefs-from, basic-blocks, call graphs, batch
-decompilation, script execution, and so on, dispatch the MCP method name
-directly.
+The direct subcommands cover the common read path. For renaming, commenting,
+type work, basic blocks, batch decompilation, script execution, and similar
+operations, dispatch the underlying method name directly.
 
 ```bash
 # single request

@@ -31,6 +31,9 @@ const IDAT_COMPAT_METHODS: &[&str] = &[
     "search_bytes",
     "get_xrefs_to",
     "get_xrefs_from",
+    "get_xrefs_to_string",
+    "get_callers",
+    "get_callees",
     "run_script",
 ];
 

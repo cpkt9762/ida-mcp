@@ -111,24 +111,23 @@ fn format_status(v: &Value) -> String {
     let max_pending = v.get("max_pending_per_worker").and_then(|v| v.as_u64());
     let max_pending_per_tenant = v.get("max_pending_per_tenant").and_then(|v| v.as_u64());
     let max_spawns = v.get("max_concurrent_spawns").and_then(|v| v.as_u64());
-    let active = v.get("active_handle").and_then(|v| v.as_str()).unwrap_or("-");
+    let active = v
+        .get("active_handle")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-");
 
     let mut lines = vec![format!("worker_count: {count}")];
     if let Some(max_workers) = max_workers {
         lines.push(format!("max_workers: {max_workers}"));
     }
     if let Some(max_workers_per_tenant) = max_workers_per_tenant {
-        lines.push(format!(
-            "max_workers_per_tenant: {max_workers_per_tenant}"
-        ));
+        lines.push(format!("max_workers_per_tenant: {max_workers_per_tenant}"));
     }
     if let Some(max_pending) = max_pending {
         lines.push(format!("max_pending_per_worker: {max_pending}"));
     }
     if let Some(max_pending_per_tenant) = max_pending_per_tenant {
-        lines.push(format!(
-            "max_pending_per_tenant: {max_pending_per_tenant}"
-        ));
+        lines.push(format!("max_pending_per_tenant: {max_pending_per_tenant}"));
     }
     if let Some(max_spawns) = max_spawns {
         lines.push(format!("max_concurrent_spawns: {max_spawns}"));
@@ -144,11 +143,16 @@ fn format_status(v: &Value) -> String {
             .get("supported")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        lines.push(format!("runtime_backend: {backend} (supported={supported})"));
+        lines.push(format!(
+            "runtime_backend: {backend} (supported={supported})"
+        ));
     }
 
     if let Some(cache) = v.get("idb_cache") {
-        let files = cache.get("file_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let files = cache
+            .get("file_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let bytes = cache
             .get("total_size_bytes")
             .and_then(|v| v.as_u64())
@@ -156,7 +160,10 @@ fn format_status(v: &Value) -> String {
         lines.push(format!("idb_cache: {files} files, {bytes} bytes"));
     }
     if let Some(cache) = v.get("response_cache") {
-        let files = cache.get("file_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let files = cache
+            .get("file_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let bytes = cache
             .get("total_size_bytes")
             .and_then(|v| v.as_u64())
@@ -183,8 +190,14 @@ fn format_status(v: &Value) -> String {
                     .get("pending_requests")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                let refs = worker.get("ref_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let idle = worker.get("idle_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+                let refs = worker
+                    .get("ref_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let idle = worker
+                    .get("idle_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let path = worker
                     .get("open_path")
                     .and_then(|v| v.as_str())
