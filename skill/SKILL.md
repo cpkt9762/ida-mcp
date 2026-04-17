@@ -1,6 +1,6 @@
 ---
 name: ida
-description: "IDA Pro reverse engineering and binary analysis. Use when writing IDAPython scripts, using IDA Domain API or idalib, analyzing binaries with IDA Pro (disassembly, decompilation, cross-references, type reconstruction, byte patching). Covers headless/batch analysis via idalib and idapro module, Hex-Rays decompiler, struct/enum creation, FLIRT signatures, and plugin development. Includes CLI tool (ida-cli) for direct Unix socket access without MCP protocol. Supports PE, ELF, Mach-O, Solana sBPF (.so auto-detected via sbpf-interpreter), and firmware binaries. Triggers: 'IDA Pro', 'IDAPython', 'IDA script', 'ida-domain', 'Hex-Rays', 'decompile with IDA', 'IDA analysis', 'idat', 'idalib', 'idapro', 'headless IDA', 'idapython script', 'IDA plugin', 'FLIRT signatures', 'IDA type library', 'ida_bytes', 'ida_funcs', 'ida_hexrays', 'reverse engineer binary', 'analyze PE', 'analyze ELF', 'IDA batch', 'IDA headless', 'open_database', 'idalib.hpp', 'ida-cli', 'ida cli'."
+description: "IDA Pro reverse engineering and binary analysis. Use when writing IDAPython scripts, using IDA Domain API or idalib, analyzing binaries with IDA Pro (disassembly, decompilation, cross-references, type reconstruction, byte patching). Covers headless/batch analysis via idalib and idapro module, Hex-Rays decompiler, struct/enum creation, FLIRT signatures, and plugin development. Includes CLI tool (ida-cli) for direct Unix socket access without MCP protocol. Supports PE, ELF, Mach-O, and firmware binaries. Triggers: 'IDA Pro', 'IDAPython', 'IDA script', 'ida-domain', 'Hex-Rays', 'decompile with IDA', 'IDA analysis', 'idat', 'idalib', 'idapro', 'headless IDA', 'idapython script', 'IDA plugin', 'FLIRT signatures', 'IDA type library', 'ida_bytes', 'ida_funcs', 'ida_hexrays', 'reverse engineer binary', 'analyze PE', 'analyze ELF', 'IDA batch', 'IDA headless', 'open_database', 'idalib.hpp', 'ida-cli', 'ida cli'."
 ---
 
 # IDA Pro Reverse Engineering
@@ -30,18 +30,18 @@ description: "IDA Pro reverse engineering and binary analysis. Use when writing 
 |------|-----------|---------|
 | **常量折叠** | `result = x * 1718750 / 1000000` | `MUL X8, X8, #110; UDIV X8, X8, #64` |
 | **丢失 +1/-1** | `discount = bias * 110 / 64` | 除法后还有 `ADD X8, X8, #1` |
-| **类型混淆** | `int v10 = *(int *)(pool + 0x1DC)` | `LDR W8, [X0, #0x1DC]`（实际 u32） |
+| **类型混淆** | `int v10 = *(int *)(ctx + 0x1DC)` | `LDR W8, [X0, #0x1DC]`（实际 u32） |
 | **隐藏饱和运算** | `result = a - b` | `SUBS X8, X9, X10; CSEL X8, XZR, X8, LO` |
 
 **伪代码质量迭代：**
 ```
 初始 F5 → sub_XXXXX(v42, v38)
   ↓ rename_symbol 叶子
-二次 F5 → compute_swap_quote(v42, v38)
+二次 F5 → parse_header(v42, v38)
   ↓ apply_type
-三次 F5 → compute_swap_quote(pool, amount_in)
+三次 F5 → parse_header(ctx, buf)
   ↓ declare_c_type + rename_local_variable
-最终 F5 → pool->fee_rate 可读
+最终 F5 → ctx->msg_type 可读
 ```
 
 ### 2. 命名与标注
@@ -52,10 +52,10 @@ description: "IDA Pro reverse engineering and binary analysis. Use when writing 
 
 | 前缀 | 含义 | 示例 |
 |------|------|------|
-| `check_`/`validate_` | 校验 | `check_account_owner` |
+| `check_`/`validate_` | 校验 | `check_permissions` |
 | `parse_`/`deserialize_` | 反序列化 | `parse_config` |
-| `compute_`/`calc_` | 计算 | `compute_amount_out` |
-| `dispatch_` | 分发入口 | `dispatch_instruction` |
+| `compute_`/`calc_` | 计算 | `compute_checksum` |
+| `dispatch_` | 分发入口 | `dispatch_command` |
 | `init_`/`setup_` | 初始化 | `init_context` |
 
 **复合效应**：rename callee 后，**重新 decompile caller** — 伪代码立即更新。
@@ -86,24 +86,24 @@ description: "IDA Pro reverse engineering and binary analysis. Use when writing 
 
 | # | Address | Old Name | New Name | Purpose |
 |---|---------|----------|----------|---------|
-| 1 | 0x1234 | sub_1234 | parse_pool_state | 从 account data 解析 pool 配置 |
-| 2 | 0x5678 | sub_5678 | compute_amount_out | CPMM swap 公式: out = reserve_out * in / (reserve_in + in) |
+| 1 | 0x1234 | sub_1234 | parse_header | 从输入 buffer 解析消息头 |
+| 2 | 0x5678 | sub_5678 | compute_checksum | CRC32 校验: crc = update(crc, data, len) |
 
 ### Structs Identified
 
 | Struct | Size | Key Fields | Used By |
 |--------|------|-----------|---------|
-| PoolState | 0x200 | +0x130: reserve_a (u64), +0x138: reserve_b (u64), +0x1DC: fee_rate (u32) | parse_pool_state, compute_amount_out |
+| MsgHeader | 0x40 | +0x00: magic (u32), +0x04: msg_type (u16), +0x08: payload_len (u32) | parse_header, dispatch_command |
 
 ### Key Findings
 
-- Fee formula: `fee = amount_in * fee_rate / 10000`
-- Dispatch: tag byte at instruction_data[0], swap=9
-- Error 0x1770: InvalidAmount (amount == 0)
+- Dispatch: tag byte at msg_type field, 0x01=init, 0x02=query, 0x03=update
+- Error 0x1770: InvalidInput (length == 0)
+- Checksum computed over payload only, header excluded
 
 ### Open Questions
 
-- sub_9ABC: 被 compute_amount_out 调用，疑似 rounding helper，待确认
+- sub_9ABC: 被 compute_checksum 调用，疑似 lookup table init，待确认
 ```
 
 #### 规则
@@ -243,10 +243,8 @@ ida-cli rename-symbol --help          # 查看具体命令参数
 
 ```bash
 # --path 必传，自动 spawn worker + 打开文件
-# sBPF .so 文件自动编译为 dylib，首次打开后自动 rename entrypoint/process_instruction
 ida-cli --path <file> list-functions --limit 20
-ida-cli --path <file> get-function-by-name --name entrypoint
-ida-cli --path <file> get-function-by-name --name process_instruction
+ida-cli --path <file> get-function-by-name --name main
 ida-cli --path <file> decompile-function --address 0x1234
 ida-cli --path <file> disassemble-function --name func_name --count 20
 ida-cli --path <file> rename-symbol --address 0x1234 --new-name parse_pool
@@ -283,38 +281,34 @@ echo '{"method":"status"}
 
 | 类型 | 示例 | 行为 |
 |------|------|------|
-| `.i64` / `.idb` | `program.i64` | 直接打开 IDA 数据库 |
+| `.i64` / `.idb` | `target.i64` | 直接打开 IDA 数据库 |
 | 原始二进制 | Mach-O / ELF / PE | IDA 自动分析 |
-| sBPF `.so` | Solana program | 自动检测 EM_BPF/EM_SBF → sbpf-interpreter LLVM AOT → 打开 dylib |
-| `.dylib` | AOT 编译产物 | 直接打开 |
-
-sBPF 自动解析链：`.so` → IdbStore hash 查缓存 → `.dylib` → `sbpf-interpreter --llvm-dylib` 编译 → IDA 打开 → `.i64` 缓存到 `~/.ida/idb/`。首次打开后自动检测并 rename `entrypoint` 和 `process_instruction`（callgraph 启发式，过滤 `_sol_*` syscall）。编译器查找顺序：`$SBPF_INTERPRETER` env → `which sbpf-interpreter` → `~/.config/opencode/skills/sbpf-trace/bin/sbpf-interpreter`。
 
 ### 并发安全
 
 **多文件并发**：每个文件独立 worker 进程，互不影响：
 
 ```bash
-ida-cli --path program_a.so list-functions --limit 5 &
-ida-cli --path program_b.so list-functions --limit 5 &
+ida-cli --path binary_a.elf list-functions --limit 5 &
+ida-cli --path binary_b.elf list-functions --limit 5 &
 wait  # 并行打开 + 查询
 ida-cli server-status   # worker_count: 2
-ida-cli --path program_a.so close  # 只关 A，B 不受影响
+ida-cli --path binary_a.elf close  # 只关 A，B 不受影响
 ```
 
 **同文件多客户端并发**：多个 CLI 可同时操作同一个程序。worker 内部串行执行，router 通过 request ID 匹配响应，不会串台：
 
 ```bash
-# 同时对 pumpfun 执行 3 个 rename —— 全部成功
-ida-cli raw '{"method":"rename_symbol","params":{"path":"pump.so","current_name":"_function_0","name":"entrypoint","flags":0}}' &
-ida-cli raw '{"method":"rename_symbol","params":{"path":"pump.so","current_name":"_function_176","name":"initialize","flags":0}}' &
-ida-cli raw '{"method":"rename_symbol","params":{"path":"pump.so","current_name":"_function_368","name":"buy","flags":0}}' &
+# 同时执行 3 个 rename —— 全部成功
+ida-cli raw '{"method":"rename_symbol","params":{"path":"target.elf","current_name":"sub_1000","name":"main_loop","flags":0}}' &
+ida-cli raw '{"method":"rename_symbol","params":{"path":"target.elf","current_name":"sub_2000","name":"parse_input","flags":0}}' &
+ida-cli raw '{"method":"rename_symbol","params":{"path":"target.elf","current_name":"sub_3000","name":"handle_request","flags":0}}' &
 wait
 
 # 读写混合也安全：rename + decompile + disasm 同时发
-ida-cli raw '{"method":"rename_symbol","params":{"path":"pump.so","current_name":"_function_560","name":"sell","flags":0}}' &
-ida-cli --path pump.so decompile-function --address 0x5e8 &
-ida-cli --path pump.so disassemble-function-at --address 0x700 --count 10 &
+ida-cli raw '{"method":"rename_symbol","params":{"path":"target.elf","current_name":"sub_4000","name":"send_response","flags":0}}' &
+ida-cli --path target.elf decompile-function --address 0x5e8 &
+ida-cli --path target.elf disassemble-function-at --address 0x700 --count 10 &
 wait
 ```
 
@@ -419,26 +413,26 @@ ida-cli --path <file> list-functions --limit 5
 
 ```
 1. batch_rename(renames: [
-     {"address": "0x1000", "name": "parse_pool_state"},
-     {"address": "0x2000", "name": "compute_amount_out"},
-     {"address": "0x3000", "name": "dispatch_instruction"}
+     {"address": "0x1000", "name": "parse_header"},
+     {"address": "0x2000", "name": "dispatch_command"},
+     {"address": "0x3000", "name": "handle_request"}
    ])                                               → 批量重命名，返回每条成功/失败
 
 2. set_function_prototype(address: "0x1000",
-     prototype: "int64_t __fastcall parse_pool_state(PoolState *pool)")
+     prototype: "int64_t __fastcall parse_header(MsgHeader *hdr)")
                                                    → 设置函数原型
 
 3. set_function_comment(address: "0x1000",
-     comment: "Parses pool state from account data")
+     comment: "Parses message header from input buffer")
                                                    → 设置函数注释
 
 4. rename_stack_variable(func_address: "0x2000",
-     var_name: "v1", new_name: "amount_in")        → 重命名栈变量
+     var_name: "v1", new_name: "cmd_type")         → 重命名栈变量
 
 5. set_stack_variable_type(func_address: "0x2000",
-     var_name: "amount_in", type_str: "uint64_t")  → 设置栈变量类型
+     var_name: "cmd_type", type_str: "uint32_t")   → 设置栈变量类型
 
-6. create_enum(decl: "enum SwapError { InvalidAmount = 0, SlippageExceeded = 1 };")
+6. create_enum(decl: "enum ErrorCode { InvalidInput = 0, BufferOverflow = 1 };")
                                                    → 创建错误码枚举
 
 7. batch_decompile(addresses: ["0x1000", "0x2000", "0x3000"])
@@ -521,7 +515,7 @@ ida-cli --path <file> list-functions --limit 5
 4. **search_bytes 不考虑端序** → arm64/x86 是 LE，`0x6E` 搜 `6E 00 00 00`
 5. **忽略 get_xrefs_to 结果数量** → 高频 helper 有 50+ xrefs，结合 build_callgraph 过滤
 6. **不用 read_dword/read_qword 验证 offset** → decompile 显示 int64_t 实际可能是 u32
-7. **打开 .dylib 而非 .i64 恢复会话** → 所有标注丢失
+7. **打开原始二进制而非 .i64 恢复会话** → 所有标注丢失
 8. **分析未完成就查询** → `get_analysis_status` 确认 `auto_is_ok=true`
 
 ---
@@ -544,5 +538,5 @@ IDA Domain API (`pip install ida-domain`) + idalib + idapro headless 执行 → 
 | [idapython-cheatsheet.md](references/idapython-cheatsheet.md) | 727 | 写 IDAPython 脚本（`run_script`） | MCP 工具已够用时 |
 | [ida-domain-api.md](references/ida-domain-api.md) | 680 | IDA Domain API 全量参考（Python headless） | MCP 逆向 |
 | [idalib-headless.md](references/idalib-headless.md) | 385 | idalib C++ / idapro 模块 batch 分析 | MCP 逆向 |
-| [binary-analysis-patterns.md](references/binary-analysis-patterns.md) | 312 | 恶意软件分析、漏洞挖掘、固件 RE | Solana DEX 逆向 |
+| [binary-analysis-patterns.md](references/binary-analysis-patterns.md) | 312 | 恶意软件分析、漏洞挖掘、固件 RE | 简单静态分析 |
 | [plugin-development.md](references/plugin-development.md) | 564 | IDA 插件开发 | 逆向分析任务 |
