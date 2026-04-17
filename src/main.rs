@@ -209,40 +209,14 @@ where
                     let tasks: Vec<_> = router
                         .list_task_states()
                         .into_iter()
-                        .map(|state| serde_json::json!({
-                            "task_id": state.id,
-                            "message": state.message,
-                            "created_at": state.created_at_iso,
-                            "updated_at": state.updated_at_iso,
-                            "status": match state.status {
-                                ida_mcp::server::task::TaskStatus::Running => "running",
-                                ida_mcp::server::task::TaskStatus::Completed => "completed",
-                                ida_mcp::server::task::TaskStatus::Failed => "failed",
-                                ida_mcp::server::task::TaskStatus::Cancelled => "cancelled",
-                            },
-                            "result": state.result,
-                        }))
+                        .map(|state| ida_mcp::router::task_state_json(&state))
                         .collect();
                     return Ok(json_response(StatusCode::OK, serde_json::json!({ "tasks": tasks })));
                 }
                 if let Some(task_id) = path.strip_prefix("/taskz/") {
                     let resp = match router.task_state(task_id) {
-                        Some(state) => json_response(
-                            StatusCode::OK,
-                            serde_json::json!({
-                                "task_id": state.id,
-                                "message": state.message,
-                                "created_at": state.created_at_iso,
-                                "updated_at": state.updated_at_iso,
-                                "status": match state.status {
-                                    ida_mcp::server::task::TaskStatus::Running => "running",
-                                    ida_mcp::server::task::TaskStatus::Completed => "completed",
-                                    ida_mcp::server::task::TaskStatus::Failed => "failed",
-                                    ida_mcp::server::task::TaskStatus::Cancelled => "cancelled",
-                                },
-                                "result": state.result,
-                            }),
-                        ),
+                        Some(state) =>
+                            json_response(StatusCode::OK, ida_mcp::router::task_state_json(&state)),
                         None => json_response(
                             StatusCode::NOT_FOUND,
                             serde_json::json!({"error": "unknown task_id"}),

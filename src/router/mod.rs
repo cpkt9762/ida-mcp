@@ -1107,7 +1107,7 @@ impl RouterState {
             .filter(|task| task.status != TaskStatus::Running)
             .rev()
             .take(32)
-            .filter_map(|task| task_state_json(&task))
+            .map(|task| task_state_json(&task))
             .collect();
 
         RouterStatus {
@@ -2060,21 +2060,37 @@ impl Default for RouterState {
     }
 }
 
-fn task_state_json(state: &TaskState) -> Option<serde_json::Value> {
+pub fn task_state_json(state: &TaskState) -> serde_json::Value {
     let status = match state.status {
         TaskStatus::Running => "running",
         TaskStatus::Completed => "completed",
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
     };
-    Some(serde_json::json!({
+    let mut value = serde_json::json!({
         "task_id": state.id,
         "status": status,
         "message": state.message,
         "created_at": state.created_at_iso,
         "updated_at": state.updated_at_iso,
         "result": state.result,
-    }))
+    });
+
+    if let Some(result) = &state.result {
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(remote) = result.get("remote").and_then(|v| v.as_bool()) {
+                obj.insert("remote".to_string(), serde_json::json!(remote));
+            }
+            if let Some(node) = result.get("node").and_then(|v| v.as_str()) {
+                obj.insert("node".to_string(), serde_json::json!(node));
+            }
+            if let Some(task_id) = result.get("remote_task_id").and_then(|v| v.as_str()) {
+                obj.insert("remote_task_id".to_string(), serde_json::json!(task_id));
+            }
+        }
+    }
+
+    value
 }
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];

@@ -138,21 +138,7 @@ async fn dispatch_cli_request(
             let tasks: Vec<_> = router
                 .list_task_states()
                 .into_iter()
-                .filter_map(|state| {
-                    Some(serde_json::json!({
-                        "task_id": state.id,
-                        "message": state.message,
-                        "created_at": state.created_at_iso,
-                        "updated_at": state.updated_at_iso,
-                        "status": match state.status {
-                            crate::server::task::TaskStatus::Running => "running",
-                            crate::server::task::TaskStatus::Completed => "completed",
-                            crate::server::task::TaskStatus::Failed => "failed",
-                            crate::server::task::TaskStatus::Cancelled => "cancelled",
-                        },
-                        "result": state.result,
-                    }))
-                })
+                .map(|state| crate::router::task_state_json(&state))
                 .collect();
             let resp = RpcResponse::ok(&req.id, serde_json::json!({ "tasks": tasks }));
             (resp, None)
@@ -164,23 +150,7 @@ async fn dispatch_cli_request(
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let resp = match task_id.and_then(|id| router.task_state(&id)) {
-                Some(state) => RpcResponse::ok(
-                    &req.id,
-                    serde_json::json!({
-                        "task_id": state.id,
-                        "message": state.message,
-                        "created_at": state.created_at_iso,
-                        "updated_at": state.updated_at_iso,
-                        "status": match state.status {
-                            crate::server::task::TaskStatus::Running => "running",
-                            crate::server::task::TaskStatus::Completed => "completed",
-                            crate::server::task::TaskStatus::Failed => "failed",
-                            crate::server::task::TaskStatus::Cancelled => "cancelled",
-                        },
-                        "result": state.result,
-                        "remote": state.result.as_ref().and_then(|v| v.get("remote")).and_then(|v| v.as_bool()).unwrap_or(false),
-                    }),
-                ),
+                Some(state) => RpcResponse::ok(&req.id, crate::router::task_state_json(&state)),
                 None => RpcResponse::err(&req.id, -32001, "unknown task_id"),
             };
             (resp, None)
