@@ -19,11 +19,11 @@ It supports two runtime modes:
 - `idat-compat`
   Uses `idat` + IDAPython as a compatibility backend for older runtimes that would otherwise crash in `open_database_quiet()`.
 
-On the current branch, older 9.x runtimes such as the tested local 9.1 installation are routed to `idat-compat` automatically.
+On the current branch, older 9.x runtimes such as the tested local 9.1 and 9.3 installations are routed to `idat-compat` automatically.
 
 ## What Works Today
 
-On the tested local IDA 9.1 runtime, `ida-cli` can already:
+On the tested local IDA 9.1 and 9.3 runtimes, `ida-cli` can already:
 
 - Open raw binaries and reuse cached databases
 - List and resolve functions
@@ -47,7 +47,7 @@ Some write-heavy and advanced type-editing operations still require further pari
 ### Run the server
 
 ```bash
-export IDADIR="/Applications/IDA Professional 9.1.app/Contents/MacOS"
+export IDADIR="/Applications/IDA Professional 9.3.app/Contents/MacOS"
 export IDASDKDIR=/tmp/ida-sdk-sdk3
 
 cargo build --bin ida-cli
@@ -68,17 +68,17 @@ cargo build --bin ida-cli
 ./target/debug/ida-cli probe-runtime
 ```
 
-Example output on the tested 9.1 installation:
+Example output on the tested 9.3 installation:
 
 ```json
-{"runtime":{"major":9,"minor":0,"build":250226},"backend":"idat-compat","supported":true,"reason":null}
+{"runtime":{"major":9,"minor":0,"build":260213},"backend":"idat-compat","supported":true,"reason":null}
 ```
 
 ## Build Requirements
 
 - Rust 1.77+
 - LLVM/Clang
-- IDA installation via `IDADIR`
+- IDA installation via `IDADIR` (supports IDA 9.1 – 9.3)
 - IDA SDK via `IDASDKDIR` or `IDALIB_SDK`
 
 The SDK lookup accepts both layouts:
