@@ -116,6 +116,16 @@ npx -y skills add https://github.com/cpkt9762/ida-cli --skill ida --agent codex 
 
 这条链路我已经本地验证过，CLI 能正确识别 `skill/SKILL.md` 里的 `ida`，并安装到 `~/.agents/skills/ida`。
 
+安装完成后，skill 自带一个 bootstrap wrapper：
+
+```bash
+~/.agents/skills/ida/scripts/ida-cli.sh --help
+~/.agents/skills/ida/scripts/ida-cli.sh probe-runtime
+~/.agents/skills/ida/scripts/ida-cli.sh --path /path/to/binary list-functions --limit 20
+```
+
+这个 wrapper 会在本机缺少 `ida-cli` 时自动安装，然后再执行实际命令。
+
 ## 构建要求
 
 - Rust 1.77+

@@ -9,6 +9,62 @@ description: "IDA Pro reverse engineering and binary analysis. Use when writing 
 
 ---
 
+## Part 0: Zero-Config Bootstrap
+
+`npx -y skills add https://github.com/cpkt9762/ida-cli --skill ida --agent codex --yes --global`
+之后，不要再假设用户已经手动安装、配置或启动过 `ida-cli`。
+
+### Boot Rule
+
+- **每个新环境第一次使用本 skill 时，先跑 `scripts/ida-cli.sh --help`。**
+- 这个 wrapper 会先检查 `ida-cli` 是否可用。
+- 如果本机没有 `ida-cli`，它会自动调用仓库里的安装脚本下载并安装。
+- 安装完成后，它会做一次 `--help` smoke test；通过后再继续后续工作。
+
+### Runtime Rule
+
+- **每次真正开始分析前，先跑 `scripts/ida-cli.sh probe-runtime`。**
+- 不要盲猜当前机器到底会走 `native-linked` 还是 `idat-compat`。
+- 如果一台机器并存多套 IDA，优先显式设置 `IDADIR`，再跑 `probe-runtime`。
+
+### Use Rule
+
+- **优先直接调用 `scripts/ida-cli.sh`，不要要求用户先手动起 server。**
+- `ida-cli` 的 flat CLI 会自动管理本地 socket server，常规分析不需要手动 `serve`。
+- 只有在明确需要 Streamable HTTP / 长驻管理面时，才手动 `serve-http`。
+
+### Zero-Config Commands
+
+```bash
+# 1. 安装或确认 ida-cli 可用
+scripts/ida-cli.sh --help
+
+# 2. 确认当前运行时后端
+scripts/ida-cli.sh probe-runtime
+
+# 3. 直接分析二进制
+scripts/ida-cli.sh --path /path/to/sample.bin list-functions --limit 20
+scripts/ida-cli.sh --path /path/to/sample.bin decompile --addr 0x140001000
+
+# 4. 如果需要 HTTP 服务
+scripts/ida-cli.sh serve-http --bind 127.0.0.1:8765
+```
+
+### Environment Notes
+
+- 默认安装位置：`~/.local/bin/ida-cli`
+- 如需固定仓库或分支：
+  - `IDA_CLI_REPO=cpkt9762/ida-cli`
+  - `IDA_CLI_INSTALL_REF=master`
+- 如需给安装脚本传额外参数：
+  - `IDA_CLI_INSTALL_ARGS="--add-path"`
+- 如需固定某套 IDA：
+  - `export IDADIR=/path/to/ida/Contents/MacOS`
+
+在这个 skill 里，安装、下载、调用、验证的统一入口就是 `scripts/ida-cli.sh`。
+
+---
+
 ## Part 1: 通用逆向方法论
 
 ### Key Principles
