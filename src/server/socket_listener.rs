@@ -219,42 +219,19 @@ async fn dispatch_cli_request(
 
             let resp = match (path.as_deref(), method_name.as_deref()) {
                 (Some(path), Some(method)) if federate => {
-                    let nodes = crate::federation::load_nodes_from_env();
-                    match crate::federation::choose_ready_node(&nodes) {
-                        Some(node) => {
-                            let mut remote_payload = serde_json::json!({
-                                "path": path,
-                                "method": method,
-                                "priority": priority,
-                                "tenant_id": tenant_id,
-                                "dedupe_key": dedupe_key,
-                                "task_params": task_params,
-                            });
-                            if let Some(obj) = remote_payload.as_object_mut() {
-                                obj.insert("federate".to_string(), serde_json::json!(false));
-                            }
-                            match crate::federation::submit_enqueue(&node, &remote_payload) {
-                                Ok(remote) => RpcResponse::ok(
-                                    &req.id,
-                                    serde_json::json!({
-                                        "remote": true,
-                                        "node": remote.node,
-                                        "url": remote.url,
-                                        "result": remote.response,
-                                    }),
-                                ),
-                                Err(err) => RpcResponse::err(
-                                    &req.id,
-                                    -32000,
-                                    format!("remote enqueue failed: {err}"),
-                                ),
-                            }
-                        }
-                        None => RpcResponse::err(
-                            &req.id,
-                            -32000,
-                            "no ready federation node available",
-                        ),
+                    match router
+                        .enqueue_federated_task(
+                            path,
+                            method,
+                            task_params,
+                            tenant_id,
+                            priority,
+                            dedupe_key,
+                        )
+                        .await
+                    {
+                        Ok(value) => RpcResponse::ok(&req.id, value),
+                        Err(err) => RpcResponse::err(&req.id, -32000, err.to_string()),
                     }
                 }
                 (Some(path), Some(method)) => match router

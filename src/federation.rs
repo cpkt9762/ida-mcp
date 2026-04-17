@@ -40,6 +40,14 @@ pub struct RemoteDispatchResult {
     pub response: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteTaskStatus {
+    pub node: String,
+    pub url: String,
+    pub task_id: String,
+    pub payload: Value,
+}
+
 pub fn load_nodes_from_env() -> Vec<FederationNodeConfig> {
     let path = match std::env::var("IDA_CLI_FEDERATION_CONFIG") {
         Ok(path) => path,
@@ -85,6 +93,24 @@ pub fn submit_enqueue(
         node: node.name.clone(),
         url: node.url.clone(),
         response,
+    })
+}
+
+pub fn fetch_remote_task(
+    node: &FederationNodeConfig,
+    task_id: &str,
+) -> anyhow::Result<RemoteTaskStatus> {
+    let uri: hyper::Uri = node.url.parse()?;
+    let host = uri
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("missing host in node url"))?;
+    let port = uri.port_u16().unwrap_or(80);
+    let payload = fetch_json(host, port, &format!("/taskz/{task_id}"))?;
+    Ok(RemoteTaskStatus {
+        node: node.name.clone(),
+        url: node.url.clone(),
+        task_id: task_id.to_string(),
+        payload,
     })
 }
 

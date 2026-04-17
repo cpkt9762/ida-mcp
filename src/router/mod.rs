@@ -1586,6 +1586,140 @@ impl RouterState {
         Ok(result)
     }
 
+    pub async fn enqueue_federated_task(
+        &self,
+        path: &str,
+        method: &str,
+        params: serde_json::Value,
+        tenant_id: Option<String>,
+        priority: u8,
+        dedupe_key: Option<String>,
+    ) -> Result<serde_json::Value, crate::error::ToolError> {
+        use crate::error::ToolError;
+
+        let tenant_id = Self::normalize_tenant(tenant_id.as_deref());
+        let nodes = crate::federation::load_nodes_from_env();
+        let node = crate::federation::choose_ready_node(&nodes).ok_or_else(|| {
+            ToolError::IdaError("no ready federation node available".to_string())
+        })?;
+
+        let task_id = match self.task_registry.create_with_key(
+            "federated",
+            dedupe_key.as_deref(),
+            &format!("Dispatching {method} to {}", node.name),
+        ) {
+            Ok(id) => id,
+            Err(existing) => existing,
+        };
+
+        if let Some(state) = self.task_registry.get(&task_id) {
+            if state.status == TaskStatus::Running && state.message.contains("Dispatching") {
+                let payload = serde_json::json!({
+                    "path": path,
+                    "method": method,
+                    "priority": priority,
+                    "tenant_id": tenant_id,
+                    "dedupe_key": dedupe_key,
+                    "task_params": params,
+                    "federate": false,
+                });
+
+                let remote = crate::federation::submit_enqueue(&node, &payload)
+                    .map_err(|e| ToolError::IdaError(format!("remote enqueue failed: {e}")))?;
+                let remote_task_id = remote
+                    .response
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::IdaError("remote node did not return task_id".to_string())
+                    })?
+                    .to_string();
+
+                self.task_registry.update_message(
+                    &task_id,
+                    &format!("Queued remotely on {} as {}", remote.node, remote_task_id),
+                );
+
+                let registry = self.task_registry.clone();
+                let task_id_for_poll = task_id.clone();
+                let remote_node = node.clone();
+                let remote_url = remote.url.clone();
+                let poll_handle = tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(2));
+                    loop {
+                        interval.tick().await;
+                        match crate::federation::fetch_remote_task(&remote_node, &remote_task_id) {
+                            Ok(remote_status) => {
+                                let payload = remote_status.payload;
+                                let status = payload
+                                    .get("status")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let message = payload
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(status);
+                                registry.update_message(
+                                    &task_id_for_poll,
+                                    &format!("remote {}: {}", remote_node.name, message),
+                                );
+                                match status {
+                                    "completed" => {
+                                        registry.complete(
+                                            &task_id_for_poll,
+                                            serde_json::json!({
+                                                "remote": true,
+                                                "node": remote_node.name,
+                                                "url": remote_url,
+                                                "remote_task_id": remote_task_id,
+                                                "payload": payload,
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                    "failed" => {
+                                        registry.fail(
+                                            &task_id_for_poll,
+                                            &format!("remote {} failed: {}", remote_node.name, message),
+                                        );
+                                        break;
+                                    }
+                                    "cancelled" => {
+                                        registry.fail(
+                                            &task_id_for_poll,
+                                            &format!("remote {} cancelled", remote_node.name),
+                                        );
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(err) => {
+                                registry.update_message(
+                                    &task_id_for_poll,
+                                    &format!("remote poll error: {err}"),
+                                );
+                            }
+                        }
+                    }
+                });
+                self.task_registry.set_handle(&task_id, poll_handle);
+            }
+        }
+
+        Ok(serde_json::json!({
+            "task_id": task_id,
+            "status": "queued",
+            "path": path,
+            "method": method,
+            "tenant_id": tenant_id,
+            "priority": priority,
+            "remote": true,
+            "node": node.name,
+            "url": node.url,
+        }))
+    }
+
     pub fn task_state(&self, task_id: &str) -> Option<TaskState> {
         self.task_registry.get(task_id)
     }
