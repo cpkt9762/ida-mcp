@@ -48,6 +48,7 @@ pub struct FederationNodeStatus {
     pub prewarm_queue_depth: Option<u64>,
     pub load_score: Option<f64>,
     pub detail: String,
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,14 @@ impl FederationNodeRecord {
         self.last_seen_at = Some(Instant::now());
         self.last_seen_iso = Some(iso);
     }
+}
+
+fn heartbeat_ttl() -> Duration {
+    std::env::var("IDA_CLI_FEDERATION_HEARTBEAT_TTL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(30))
 }
 
 pub fn load_nodes_from_env() -> Vec<FederationNodeConfig> {
@@ -216,6 +225,34 @@ pub fn probe_record(record: &FederationNodeRecord) -> FederationNodeStatus {
             prewarm_queue_depth: None,
             load_score: None,
             detail: "disabled".to_string(),
+            stale: false,
+        };
+    }
+
+    let stale = record.source == "heartbeat"
+        && record
+            .last_seen_at
+            .map(|seen| seen.elapsed() > heartbeat_ttl())
+            .unwrap_or(true);
+    if stale {
+        return FederationNodeStatus {
+            name: node.name.clone(),
+            url: node.url.clone(),
+            enabled: true,
+            source: record.source.clone(),
+            last_seen_iso: record.last_seen_iso.clone(),
+            capabilities: node.capabilities.clone(),
+            tenant_allow: node.tenant_allow.clone(),
+            node_id: node.node_id.clone(),
+            healthy: false,
+            ready: false,
+            worker_count: None,
+            max_workers: None,
+            route_queue_depth: None,
+            prewarm_queue_depth: None,
+            load_score: None,
+            detail: "heartbeat expired".to_string(),
+            stale: true,
         };
     }
 
@@ -239,6 +276,7 @@ pub fn probe_record(record: &FederationNodeRecord) -> FederationNodeStatus {
                 prewarm_queue_depth: None,
                 load_score: None,
                 detail: format!("invalid url: {err}"),
+                stale: false,
             };
         }
     };
@@ -261,6 +299,7 @@ pub fn probe_record(record: &FederationNodeRecord) -> FederationNodeStatus {
             prewarm_queue_depth: None,
             load_score: None,
             detail: "only http federation urls are currently supported".to_string(),
+            stale: false,
         };
     }
 
@@ -284,6 +323,7 @@ pub fn probe_record(record: &FederationNodeRecord) -> FederationNodeStatus {
                 prewarm_queue_depth: None,
                 load_score: None,
                 detail: "missing host".to_string(),
+                stale: false,
             };
         }
     };
@@ -337,6 +377,7 @@ pub fn probe_record(record: &FederationNodeRecord) -> FederationNodeStatus {
         } else {
             "unreachable or unhealthy".to_string()
         },
+        stale: false,
     }
 }
 

@@ -122,6 +122,18 @@ pub enum CliCommand {
     FederationUnregister {
         name: String,
     },
+    FederationHeartbeat {
+        name: String,
+        url: String,
+        #[arg(long, default_value_t = 1)]
+        weight: u32,
+        #[arg(long)]
+        capability: Vec<String>,
+        #[arg(long)]
+        tenant_allow: Vec<String>,
+        #[arg(long)]
+        node_id: Option<String>,
+    },
     Close,
     Status,
     Shutdown,
@@ -245,6 +257,30 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             println!("{body}");
             Ok(())
         }
+        CliCommand::FederationHeartbeat {
+            name,
+            url,
+            weight,
+            capability,
+            tenant_allow,
+            node_id,
+        } => {
+            let body = reqwest_blocking_like(
+                "POST",
+                &admin_url("/federationz/heartbeat"),
+                Some(serde_json::json!({
+                    "name": name,
+                    "url": url,
+                    "weight": weight,
+                    "enabled": true,
+                    "capabilities": capability,
+                    "tenant_allow": tenant_allow,
+                    "node_id": node_id,
+                })),
+            )?;
+            println!("{body}");
+            Ok(())
+        }
         CliCommand::Raw { json_str } => {
             let req = complete_envelope(&json_str, 1)?;
             let resp = send_request(&socket_path, &req, timeout).await?;
@@ -337,7 +373,8 @@ fn build_rpc_params(
         | CliCommand::CancelTask { .. }
         | CliCommand::FederationList
         | CliCommand::FederationRegister { .. }
-        | CliCommand::FederationUnregister { .. } => unreachable!(),
+        | CliCommand::FederationUnregister { .. }
+        | CliCommand::FederationHeartbeat { .. } => unreachable!(),
         CliCommand::PrewarmMany { .. } => unreachable!(),
         _ => unreachable!(),
     };
