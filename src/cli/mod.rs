@@ -13,6 +13,7 @@ use tokio::net::UnixStream;
 use tokio::sync::Semaphore;
 
 #[derive(Parser)]
+#[command(name = "ida-cli", version, about = "Headless IDA CLI and MCP Server")]
 pub struct CliArgs {
     #[arg(long, global = true)]
     socket: Option<String>,

@@ -585,7 +585,9 @@ fn main() -> anyhow::Result<()> {
         );
 
         if !is_server_mode {
-            // Flat CLI mode: parse CliArgs directly
+            // Flat CLI mode: parse CliArgs directly.
+            // clap handles --version / -V automatically (prints version
+            // from Cargo.toml and exits 0).
             let args = ida_mcp::cli::CliArgs::parse();
             return run_cli(args);
         }
