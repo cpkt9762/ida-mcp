@@ -99,6 +99,8 @@ pub enum CliCommand {
         #[arg(long)]
         tenant: Option<String>,
         #[arg(long)]
+        federate: bool,
+        #[arg(long)]
         params: Option<String>,
     },
     TaskStatus {
@@ -164,6 +166,7 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             priority,
             dedupe_key,
             tenant,
+            federate,
             params,
         } => {
             let mut payload = serde_json::Map::new();
@@ -172,6 +175,7 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
             }
             payload.insert("method".to_string(), serde_json::json!(method));
             payload.insert("priority".to_string(), serde_json::json!(priority));
+            payload.insert("federate".to_string(), serde_json::json!(federate));
             if let Some(tenant) = tenant {
                 payload.insert("tenant_id".to_string(), serde_json::json!(tenant));
             }

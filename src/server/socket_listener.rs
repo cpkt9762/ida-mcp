@@ -184,6 +184,94 @@ async fn dispatch_cli_request(
             };
             (resp, None)
         }
+        "enqueue" => {
+            let method_name = req
+                .params
+                .get("method")
+                .and_then(|v| v.as_str())
+                .map(primary_name_for)
+                .map(str::to_string);
+            let priority = req
+                .params
+                .get("priority")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u8;
+            let tenant_id = req
+                .params
+                .get("tenant_id")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
+            let dedupe_key = req
+                .params
+                .get("dedupe_key")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
+            let task_params = req
+                .params
+                .get("task_params")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let federate = req
+                .params
+                .get("federate")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let resp = match (path.as_deref(), method_name.as_deref()) {
+                (Some(path), Some(method)) if federate => {
+                    let nodes = crate::federation::load_nodes_from_env();
+                    match crate::federation::choose_ready_node(&nodes) {
+                        Some(node) => {
+                            let mut remote_payload = serde_json::json!({
+                                "path": path,
+                                "method": method,
+                                "priority": priority,
+                                "tenant_id": tenant_id,
+                                "dedupe_key": dedupe_key,
+                                "task_params": task_params,
+                            });
+                            if let Some(obj) = remote_payload.as_object_mut() {
+                                obj.insert("federate".to_string(), serde_json::json!(false));
+                            }
+                            match crate::federation::submit_enqueue(&node, &remote_payload) {
+                                Ok(remote) => RpcResponse::ok(
+                                    &req.id,
+                                    serde_json::json!({
+                                        "remote": true,
+                                        "node": remote.node,
+                                        "url": remote.url,
+                                        "result": remote.response,
+                                    }),
+                                ),
+                                Err(err) => RpcResponse::err(
+                                    &req.id,
+                                    -32000,
+                                    format!("remote enqueue failed: {err}"),
+                                ),
+                            }
+                        }
+                        None => RpcResponse::err(
+                            &req.id,
+                            -32000,
+                            "no ready federation node available",
+                        ),
+                    }
+                }
+                (Some(path), Some(method)) => match router
+                    .enqueue_route_task(path, method, task_params, tenant_id, priority, dedupe_key)
+                    .await
+                {
+                    Ok(value) => RpcResponse::ok(&req.id, value),
+                    Err(err) => RpcResponse::err(&req.id, -32000, err.to_string()),
+                },
+                _ => RpcResponse::err(
+                    &req.id,
+                    -32001,
+                    "enqueue requires path and method",
+                ),
+            };
+            (resp, None)
+        }
         "cancel_task" => {
             let task_id = req
                 .params
@@ -243,50 +331,6 @@ async fn dispatch_cli_request(
                 }
             } else {
                 RpcResponse::err(&req.id, -32001, "prewarm requires 'path' parameter")
-            };
-            (resp, None)
-        }
-        "enqueue" => {
-            let method_name = req
-                .params
-                .get("method")
-                .and_then(|v| v.as_str())
-                .map(primary_name_for)
-                .map(str::to_string);
-            let priority = req
-                .params
-                .get("priority")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u8;
-            let tenant_id = req
-                .params
-                .get("tenant_id")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned);
-            let dedupe_key = req
-                .params
-                .get("dedupe_key")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned);
-            let task_params = req
-                .params
-                .get("task_params")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-
-            let resp = match (path.as_deref(), method_name.as_deref()) {
-                (Some(path), Some(method)) => match router
-                    .enqueue_route_task(path, method, task_params, tenant_id, priority, dedupe_key)
-                    .await
-                {
-                    Ok(value) => RpcResponse::ok(&req.id, value),
-                    Err(err) => RpcResponse::err(&req.id, -32000, err.to_string()),
-                },
-                _ => RpcResponse::err(
-                    &req.id,
-                    -32001,
-                    "enqueue requires path and method",
-                ),
             };
             (resp, None)
         }

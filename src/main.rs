@@ -126,6 +126,7 @@ impl<S> GatewayService<S> {
 impl<B, S> Service<Request<B>> for GatewayService<S>
 where
     B: http_body::Body + Send + 'static,
+    B::Data: Send + 'static,
     B::Error: std::fmt::Display,
     S: Service<
             Request<B>,
@@ -196,6 +197,51 @@ where
                     let status = router.status_snapshot().await;
                     return Ok(metrics_response(&status));
                 }
+                if path == "/tasksz" {
+                    let tasks: Vec<_> = router
+                        .list_task_states()
+                        .into_iter()
+                        .map(|state| serde_json::json!({
+                            "task_id": state.id,
+                            "message": state.message,
+                            "created_at": state.created_at_iso,
+                            "updated_at": state.updated_at_iso,
+                            "status": match state.status {
+                                ida_mcp::server::task::TaskStatus::Running => "running",
+                                ida_mcp::server::task::TaskStatus::Completed => "completed",
+                                ida_mcp::server::task::TaskStatus::Failed => "failed",
+                                ida_mcp::server::task::TaskStatus::Cancelled => "cancelled",
+                            },
+                            "result": state.result,
+                        }))
+                        .collect();
+                    return Ok(json_response(StatusCode::OK, serde_json::json!({ "tasks": tasks })));
+                }
+                if let Some(task_id) = path.strip_prefix("/taskz/") {
+                    let resp = match router.task_state(task_id) {
+                        Some(state) => json_response(
+                            StatusCode::OK,
+                            serde_json::json!({
+                                "task_id": state.id,
+                                "message": state.message,
+                                "created_at": state.created_at_iso,
+                                "updated_at": state.updated_at_iso,
+                                "status": match state.status {
+                                    ida_mcp::server::task::TaskStatus::Running => "running",
+                                    ida_mcp::server::task::TaskStatus::Completed => "completed",
+                                    ida_mcp::server::task::TaskStatus::Failed => "failed",
+                                    ida_mcp::server::task::TaskStatus::Cancelled => "cancelled",
+                                },
+                                "result": state.result,
+                            }),
+                        ),
+                        None => json_response(
+                            StatusCode::NOT_FOUND,
+                            serde_json::json!({"error": "unknown task_id"}),
+                        ),
+                    };
+                    return Ok(resp);
+                }
             }
 
             if let Some(origin) = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok()) {
@@ -218,6 +264,64 @@ where
                     }),
                 ));
             };
+
+            if req.method() == hyper::http::Method::POST && path == "/enqueuez" {
+                let body = match req.into_body().collect().await {
+                    Ok(body) => body.to_bytes(),
+                    Err(err) => {
+                        return Ok(json_response(
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({"error": format!("invalid request body: {err}")}),
+                        ));
+                    }
+                };
+                let value: serde_json::Value = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(json_response(
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({"error": format!("invalid json: {err}")}),
+                        ));
+                    }
+                };
+
+                let path = value.get("path").and_then(|v| v.as_str());
+                let method = value.get("method").and_then(|v| v.as_str());
+                let priority = value
+                    .get("priority")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8;
+                let tenant_id = value
+                    .get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
+                let dedupe_key = value
+                    .get("dedupe_key")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned);
+                let params = value
+                    .get("task_params")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let resp = match (path, method) {
+                    (Some(path), Some(method)) => match router
+                        .enqueue_route_task(path, method, params, tenant_id, priority, dedupe_key)
+                        .await
+                    {
+                        Ok(value) => json_response(StatusCode::OK, value),
+                        Err(err) => json_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            serde_json::json!({"error": err.to_string()}),
+                        ),
+                    },
+                    _ => json_response(
+                        StatusCode::BAD_REQUEST,
+                        serde_json::json!({"error": "enqueuez requires path and method"}),
+                    ),
+                };
+                return Ok(resp);
+            }
 
             inner.call(req).await
         })
