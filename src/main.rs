@@ -874,7 +874,8 @@ fn open_db_for_probe(path: &PathBuf, args: &ProbeArgs) -> Result<IDB, idalib::ID
         let out_path = if let Some(out) = args.idb_out.as_deref() {
             PathBuf::from(out)
         } else {
-            path.with_extension("i64")
+            let store = ida_mcp::idb_store::IdbStore::new();
+            store.lookup(path).unwrap_or_else(|| store.idb_path(path))
         };
         info!(
             "Opening raw binary with auto-analysis (idb_out={})",

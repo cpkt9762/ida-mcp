@@ -106,6 +106,7 @@ SDK 路径支持两种布局：
 ## 其他文档
 
 - [docs/BUILDING.md](docs/BUILDING.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TRANSPORTS.md](docs/TRANSPORTS.md)
 - [docs/TOOLS.md](docs/TOOLS.md)
 

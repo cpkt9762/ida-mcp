@@ -106,6 +106,7 @@ This backend shells out to `idat`, runs short IDAPython scripts, and returns str
 ## Documentation
 
 - [docs/BUILDING.md](docs/BUILDING.md)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - [docs/TRANSPORTS.md](docs/TRANSPORTS.md)
 - [docs/TOOLS.md](docs/TOOLS.md)
 

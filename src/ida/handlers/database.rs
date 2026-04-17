@@ -8,6 +8,7 @@ use crate::ida::lock::{
     acquire_mcp_lock, clean_stale_mcp_lock, detect_db_lock, release_mcp_lock_file,
 };
 use crate::ida::types::{DbInfo, DebugInfoLoad};
+use crate::idb_store::IdbStore;
 use idalib::IDB;
 use serde_json::{json, Value};
 use std::ffi::OsString;
@@ -118,7 +119,8 @@ pub fn handle_open(
     let mut dsym_path = None;
     let mut should_load_dsym = false;
     if !is_idb {
-        let out_path = expanded.with_extension("i64");
+        let store = IdbStore::new();
+        let out_path = store.lookup(&expanded).unwrap_or_else(|| store.idb_path(&expanded));
         should_load_dsym = !out_path.exists();
         if should_load_dsym {
             dsym_path = dsym_path_for_binary(&expanded);
@@ -215,6 +217,12 @@ pub fn handle_open(
             )));
         }
     };
+
+    if !is_idb {
+        if let Some(out_path) = raw_out_path.as_ref() {
+            IdbStore::new().record(&expanded, out_path);
+        }
+    }
 
     let mut debug_info = None;
     if load_debug_info {

@@ -1682,9 +1682,9 @@ fn batch_decompile_with_idat(database_path: &Path, addrs: &[Value]) -> Result<Va
     let output_path = temp_path("batch-decompile", "json");
     let addrs_json = serde_json::to_string(addrs)
         .map_err(|err| ToolError::IdaError(format!("failed to encode addresses: {err}")))?;
-    let addrs_literal = escape_python_string(&addrs_json);
+    let addrs_literal = addrs_json.replace("'''", "\\'\\'\\'");
     let script = format!(
-        "{}\nADDRS = json.loads(r\"{}\")\n{}",
+        "{}\nADDRS = json.loads('''{}''')\n{}",
         python_prelude(&output_path, database_path),
         addrs_literal,
         r#"

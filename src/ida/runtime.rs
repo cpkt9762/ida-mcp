@@ -69,6 +69,8 @@ pub struct RuntimeProbeResult {
     pub backend: Option<WorkerBackendKind>,
     pub supported: bool,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_methods: Option<Vec<String>>,
 }
 
 impl RuntimeProbeResult {
@@ -78,6 +80,12 @@ impl RuntimeProbeResult {
             backend: Some(backend),
             supported: true,
             reason: None,
+            supported_methods: Some(
+                crate::ida::supported_methods_for(backend)
+                    .iter()
+                    .map(|method| (*method).to_string())
+                    .collect(),
+            ),
         }
     }
 
@@ -87,6 +95,7 @@ impl RuntimeProbeResult {
             backend: None,
             supported: false,
             reason: Some(reason.into()),
+            supported_methods: None,
         }
     }
 
@@ -96,6 +105,7 @@ impl RuntimeProbeResult {
             backend: None,
             supported: false,
             reason: Some(reason.into()),
+            supported_methods: None,
         }
     }
 }
